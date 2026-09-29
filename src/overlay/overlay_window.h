@@ -2,6 +2,7 @@
 
 #include "../config/config.h"
 #include "../metrics/metrics.h"
+#include "../util/formatter.h"
 #include <windows.h>
 #include <shellapi.h>
 #include <string>
@@ -30,7 +31,7 @@ private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-    void RenderOverlay(const std::wstring& text);
+    void RenderOverlay(const std::vector<FormattedSegment>& segments);
     void RecalculateWindowPosition(int contentWidth, int contentHeight);
 
     void SetupTrayIcon();
@@ -43,7 +44,7 @@ private:
     ULONG_PTR gdiplusToken_ = 0;
 
     bool isPositioningMode_ = false;
-    std::wstring lastRenderedText_;
+    std::vector<FormattedSegment> lastSegments_;
     int windowX_ = 0;
     int windowY_ = 0;
     int windowWidth_ = 600;

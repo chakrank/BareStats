@@ -18,7 +18,8 @@ static const UINT_PTR TIMER_UPDATE_ID = 2001;
 
 static void OutputToConsole(const std::string& msg) {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (!hOut || hOut == INVALID_HANDLE_VALUE) {
+    DWORD fileType = GetFileType(hOut);
+    if (!hOut || hOut == INVALID_HANDLE_VALUE || fileType == FILE_TYPE_UNKNOWN) {
         AttachConsole(ATTACH_PARENT_PROCESS);
         hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     }
@@ -33,7 +34,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     // Support --test or --cli for verification
     if (fullCmd.find(L"--test") != std::wstring::npos || fullCmd.find(L"--cli") != std::wstring::npos) {
-        OutputToConsole("BareStats (TinyMonitor) CLI Verification\n");
+        OutputToConsole("\nBareStats (TinyMonitor) CLI Verification\n");
         OutputToConsole("Initializing telemetry collectors...\n");
 
         std::string configPath = ConfigManager::GetDefaultConfigPath();
@@ -55,9 +56,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
             std::string line = "[" + std::to_string(i + 1) + "/3] " + Formatter::FormatUtf8(metrics, &config) + "\n";
             OutputToConsole(line);
+
+            if (i == 0 && metrics.gpu.isAvailable) {
+                std::string gpuInfo = "  [GPU Details] Name: " + metrics.gpu.name + 
+                    " | TDP Limit: " + (metrics.gpu.powerLimitWatts.has_value() ? std::to_string(*metrics.gpu.powerLimitWatts) + "W" : "N/A") +
+                    " | Slowdown Temp: " + (metrics.gpu.tempSlowdownLimitC.has_value() ? std::to_string(*metrics.gpu.tempSlowdownLimitC) + "C" : "N/A") + "\n";
+                OutputToConsole(gpuInfo);
+            }
         }
 
-        OutputToConsole("Test completed successfully.\n");
+        OutputToConsole("Test completed successfully.\n\n");
         return 0;
     }
 

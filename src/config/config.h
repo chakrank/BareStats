@@ -16,6 +16,9 @@ struct AppConfig {
     std::wstring fontFace = L"Consolas";
     int fontSize = 14;
     COLORREF textColor = RGB(220, 220, 220); // crisp light silver-white
+    COLORREF colorHigh = RGB(255, 215, 0);   // yellow for high utilization
+    COLORREF colorCritical = RGB(255, 77, 77); // red for critical / near-max
+    bool enableDynamicColors = true;
     bool dropShadow = true;
 
     uint32_t refreshIntervalMs = 1000;

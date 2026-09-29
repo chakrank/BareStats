@@ -20,7 +20,9 @@ struct GpuMetrics {
     uint64_t memoryUsedBytes = 0;
     uint64_t memoryTotalBytes = 0;
     std::optional<uint32_t> temperatureC;
+    std::optional<uint32_t> tempSlowdownLimitC;
     std::optional<uint32_t> powerWatts;
+    std::optional<uint32_t> powerLimitWatts;
     std::optional<uint32_t> fanSpeedPercent;
     std::optional<uint32_t> fanRpm;
 };

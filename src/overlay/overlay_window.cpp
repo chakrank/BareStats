@@ -21,7 +21,20 @@ using namespace Gdiplus;
 namespace BareStats {
 
 static HHOOK s_hMouseHook = nullptr;
+static HWINEVENTHOOK s_hWinEventHook = nullptr;
 static OverlayWindow* s_pOverlayInstance = nullptr;
+
+static void CALLBACK WinEventProc(HWINEVENTHOOK, DWORD event, HWND hwnd, LONG, LONG, DWORD, DWORD) {
+    if (event == EVENT_SYSTEM_FOREGROUND && s_pOverlayInstance) {
+        HWND overlayHwnd = s_pOverlayInstance->GetHwnd();
+        if (overlayHwnd && overlayHwnd != hwnd && !s_pOverlayInstance->IsPositioningMode()) {
+            if (GetWindow(overlayHwnd, GW_HWNDPREV) != nullptr) {
+                SetWindowPos(overlayHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
+            }
+        }
+    }
+}
 
 static LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
@@ -47,6 +60,10 @@ OverlayWindow::OverlayWindow(AppConfig& config)
 }
 
 OverlayWindow::~OverlayWindow() {
+    if (s_hWinEventHook) {
+        UnhookWinEvent(s_hWinEventHook);
+        s_hWinEventHook = nullptr;
+    }
     if (s_hMouseHook) {
         UnhookWindowsHookEx(s_hMouseHook);
         s_hMouseHook = nullptr;
@@ -143,8 +160,11 @@ LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
 
         case WM_WINDOWPOSCHANGING: {
             auto* pwp = reinterpret_cast<WINDOWPOS*>(lParam);
-            pwp->flags |= SWP_NOOWNERZORDER | SWP_NOACTIVATE;
-            return 0;
+            if (!isPositioningMode_) {
+                pwp->hwndInsertAfter = HWND_TOPMOST;
+            }
+            pwp->flags |= SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
         }
 
         case WM_DESTROY:
@@ -181,16 +201,22 @@ bool OverlayWindow::Initialize(HINSTANCE hInstance) {
     DWORD exStyle = WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
     DWORD style = WS_POPUP;
 
+    RecalculateWindowPosition(windowWidth_, windowHeight_);
+
     hwnd_ = CreateWindowExW(exStyle, L"BareStatsOverlayClass", L"BareStats Overlay", style,
-                            0, 0, windowWidth_, windowHeight_,
+                            windowX_, windowY_, windowWidth_, windowHeight_,
                             nullptr, nullptr, hInstance, this);
 
     if (!hwnd_) {
         return false;
     }
 
-    BOOL disableTransitions = TRUE;
-    DwmSetWindowAttribute(hwnd_, DWMWA_TRANSITIONS_FORCEDISABLED, &disableTransitions, sizeof(disableTransitions));
+    s_pOverlayInstance = this;
+
+    // Track foreground window changes across the system to immediately re-assert HWND_TOPMOST
+    s_hWinEventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+                                      nullptr, WinEventProc, 0, 0,
+                                      WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
     // Register hotkeys with fallbacks
     // Primary: Ctrl + Shift + M (most reliable across Windows setups)
@@ -297,7 +323,7 @@ void OverlayWindow::SetPositioningMode(bool enable) {
     SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, exStyle);
     SetWindowPos(hwnd_, HWND_TOPMOST, windowX_, windowY_, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
-    RenderOverlay(lastRenderedText_);
+    RenderOverlay(lastSegments_);
 }
 
 void OverlayWindow::OnMoved() {
@@ -327,7 +353,7 @@ void OverlayWindow::ResetToPreset(PositionPreset preset) {
     ConfigManager::Save(ConfigManager::GetDefaultConfigPath(), config_);
 
     RecalculateWindowPosition(windowWidth_, windowHeight_);
-    RenderOverlay(lastRenderedText_);
+    RenderOverlay(lastSegments_);
 }
 
 void OverlayWindow::RecalculateWindowPosition(int contentWidth, int contentHeight) {
@@ -343,9 +369,8 @@ void OverlayWindow::RecalculateWindowPosition(int contentWidth, int contentHeigh
 }
 
 void OverlayWindow::UpdateMetrics(const SystemMetrics& metrics) {
-    std::wstring text = Formatter::Format(metrics, &config_);
-    lastRenderedText_ = text;
-    RenderOverlay(text);
+    lastSegments_ = Formatter::FormatSegments(metrics, &config_);
+    RenderOverlay(lastSegments_);
 }
 
 static void DrawVectorMoveIcon(Graphics& graphics, float cx, float cy, float radius, Color color) {
@@ -372,8 +397,8 @@ static void DrawVectorMoveIcon(Graphics& graphics, float cx, float cy, float rad
     graphics.FillPolygon(&brush, ptDown, 3);
 }
 
-void OverlayWindow::RenderOverlay(const std::wstring& text) {
-    if (!hwnd_ || text.empty()) return;
+void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments) {
+    if (!hwnd_ || segments.empty()) return;
 
     HDC hdcScreen = GetDC(nullptr);
     if (!hdcScreen) return;
@@ -383,7 +408,6 @@ void OverlayWindow::RenderOverlay(const std::wstring& text) {
         return;
     }
 
-    std::wstring statsText = text;
     std::wstring headerText = L"MOVE MODE: Drag to reposition \x2022 Click outside or Ctrl+Shift+M to lock";
 
     // Fonts
@@ -397,6 +421,15 @@ void OverlayWindow::RenderOverlay(const std::wstring& text) {
         headerFont = std::make_unique<Font>(L"Consolas", 11.0f, FontStyleBold, UnitPixel);
     }
 
+    StringFormat format(StringFormat::GenericTypographic());
+    format.SetFormatFlags(format.GetFormatFlags() | StringFormatFlagsMeasureTrailingSpaces | StringFormatFlagsNoWrap);
+
+    // Concatenate full text to measure layout bounds
+    std::wstring fullText;
+    for (const auto& seg : segments) {
+        fullText += seg.text;
+    }
+
     RectF layoutRect(0, 0, 4000, 300);
     RectF statsBounds{};
     RectF headerBounds{};
@@ -404,7 +437,7 @@ void OverlayWindow::RenderOverlay(const std::wstring& text) {
     {
         Graphics measureGraphics(memDC);
         measureGraphics.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
-        measureGraphics.MeasureString(statsText.c_str(), -1, font.get(), layoutRect, &statsBounds);
+        measureGraphics.MeasureString(fullText.c_str(), static_cast<int>(fullText.length()), font.get(), PointF(0, 0), &format, &statsBounds);
         if (isPositioningMode_) {
             measureGraphics.MeasureString(headerText.c_str(), -1, headerFont.get(), layoutRect, &headerBounds);
         }
@@ -429,7 +462,7 @@ void OverlayWindow::RenderOverlay(const std::wstring& text) {
     windowWidth_ = contentWidth;
     windowHeight_ = contentHeight;
 
-    if (!isPositioningMode_ && config_.preset != PositionPreset::Custom) {
+    if (!isPositioningMode_) {
         RecalculateWindowPosition(windowWidth_, windowHeight_);
     } else {
         RECT curRect{};
@@ -496,20 +529,52 @@ void OverlayWindow::RenderOverlay(const std::wstring& text) {
         REAL statsX = 6.0f;
         REAL statsY = isPositioningMode_ ? static_cast<REAL>(headerHeight_ + 5) : 5.0f;
 
-        // Draw shadow for contrast
-        if (config_.dropShadow) {
-            SolidBrush shadowBrush(Color(220, 0, 0, 0));
-            graphics.DrawString(statsText.c_str(), -1, font.get(), PointF(statsX + 1.0f, statsY + 1.0f), &shadowBrush);
-            graphics.DrawString(statsText.c_str(), -1, font.get(), PointF(statsX + 2.0f, statsY + 2.0f), &shadowBrush);
+        // Base text brush
+        BYTE rBase = GetRValue(config_.textColor);
+        BYTE gBase = GetGValue(config_.textColor);
+        BYTE bBase = GetBValue(config_.textColor);
+        SolidBrush textBrush(Color(255, rBase, gBase, bBase));
+
+        // High text brush (Yellow)
+        BYTE rHigh = GetRValue(config_.colorHigh);
+        BYTE gHigh = GetGValue(config_.colorHigh);
+        BYTE bHigh = GetBValue(config_.colorHigh);
+        SolidBrush highBrush(Color(255, rHigh, gHigh, bHigh));
+
+        // Critical text brush (Red)
+        BYTE rCrit = GetRValue(config_.colorCritical);
+        BYTE gCrit = GetGValue(config_.colorCritical);
+        BYTE bCrit = GetBValue(config_.colorCritical);
+        SolidBrush critBrush(Color(255, rCrit, gCrit, bCrit));
+
+        SolidBrush shadowBrush(Color(220, 0, 0, 0));
+
+        // Render each segment token-by-token
+        REAL curX = statsX;
+        for (const auto& seg : segments) {
+            if (seg.text.empty()) continue;
+
+            RectF segBounds{};
+            graphics.MeasureString(seg.text.c_str(), static_cast<int>(seg.text.length()), font.get(), PointF(0, 0), &format, &segBounds);
+
+            // Draw shadow for contrast
+            if (config_.dropShadow) {
+                graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), font.get(), PointF(curX + 1.0f, statsY + 1.0f), &format, &shadowBrush);
+                graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), font.get(), PointF(curX + 2.0f, statsY + 2.0f), &format, &shadowBrush);
+            }
+
+            // Pick color brush by severity
+            Brush* pBrush = &textBrush;
+            if (seg.severity == MetricSeverity::Critical) {
+                pBrush = &critBrush;
+            } else if (seg.severity == MetricSeverity::High) {
+                pBrush = &highBrush;
+            }
+
+            graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), font.get(), PointF(curX, statsY), &format, pBrush);
+
+            curX += segBounds.Width;
         }
-
-        // Main stats text color
-        BYTE r = GetRValue(config_.textColor);
-        BYTE g = GetGValue(config_.textColor);
-        BYTE b = GetBValue(config_.textColor);
-
-        SolidBrush textBrush(Color(255, r, g, b));
-        graphics.DrawString(statsText.c_str(), -1, font.get(), PointF(statsX, statsY), &textBrush);
     }
 
     POINT ptSrc = { 0, 0 };
@@ -523,6 +588,14 @@ void OverlayWindow::RenderOverlay(const std::wstring& text) {
     blend.AlphaFormat = AC_SRC_ALPHA;
 
     UpdateLayeredWindow(hwnd_, hdcScreen, &ptDst, &wndSize, memDC, &ptSrc, 0, &blend, ULW_ALPHA);
+
+    if (!isPositioningMode_) {
+        HWND prevWnd = GetWindow(hwnd_, GW_HWNDPREV);
+        if (prevWnd != nullptr) {
+            SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
+        }
+    }
 
     SelectObject(memDC, hOldBmp);
     DeleteObject(hBmp);

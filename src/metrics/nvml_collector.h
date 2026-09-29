@@ -32,6 +32,9 @@ private:
     typedef int (*nvmlDeviceGetPowerUsage_t)(void*, unsigned int*);
     typedef int (*nvmlDeviceGetFanSpeed_t)(void*, unsigned int*);
     typedef int (*nvmlDeviceGetFanSpeed_v2_t)(void*, unsigned int, unsigned int*);
+    typedef int (*nvmlDeviceGetEnforcedPowerLimit_t)(void*, unsigned int*);
+    typedef int (*nvmlDeviceGetPowerManagementLimit_t)(void*, unsigned int*);
+    typedef int (*nvmlDeviceGetTemperatureThreshold_t)(void*, int, unsigned int*);
 
     nvmlInit_t fnNvmlInit_ = nullptr;
     nvmlShutdown_t fnNvmlShutdown_ = nullptr;
@@ -44,6 +47,9 @@ private:
     nvmlDeviceGetPowerUsage_t fnNvmlDeviceGetPowerUsage_ = nullptr;
     nvmlDeviceGetFanSpeed_t fnNvmlDeviceGetFanSpeed_ = nullptr;
     nvmlDeviceGetFanSpeed_v2_t fnNvmlDeviceGetFanSpeed_v2_ = nullptr;
+    nvmlDeviceGetEnforcedPowerLimit_t fnNvmlDeviceGetEnforcedPowerLimit_ = nullptr;
+    nvmlDeviceGetPowerManagementLimit_t fnNvmlDeviceGetPowerManagementLimit_ = nullptr;
+    nvmlDeviceGetTemperatureThreshold_t fnNvmlDeviceGetTemperatureThreshold_ = nullptr;
 
     bool LoadNvml();
     void UnloadNvml();

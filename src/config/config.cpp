@@ -67,6 +67,14 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
     GetPrivateProfileStringA("Appearance", "text_color", "#DCDCDC", buf, sizeof(buf), iniPath.c_str());
     config.textColor = HexToColor(buf, RGB(220, 220, 220));
 
+    GetPrivateProfileStringA("Appearance", "color_high", "#FFD700", buf, sizeof(buf), iniPath.c_str());
+    config.colorHigh = HexToColor(buf, RGB(255, 215, 0));
+
+    GetPrivateProfileStringA("Appearance", "color_critical", "#FF4D4D", buf, sizeof(buf), iniPath.c_str());
+    config.colorCritical = HexToColor(buf, RGB(255, 77, 77));
+
+    config.enableDynamicColors = (GetPrivateProfileIntA("Appearance", "enable_dynamic_colors", 1, iniPath.c_str()) != 0);
+
     config.dropShadow = (GetPrivateProfileIntA("Appearance", "drop_shadow", 1, iniPath.c_str()) != 0);
 
     // [Telemetry]
@@ -100,6 +108,9 @@ bool ConfigManager::Save(const std::string& iniPath, const AppConfig& config) {
 
     WritePrivateProfileStringA("Appearance", "font_size", std::to_string(config.fontSize).c_str(), iniPath.c_str());
     WritePrivateProfileStringA("Appearance", "text_color", ColorToHex(config.textColor).c_str(), iniPath.c_str());
+    WritePrivateProfileStringA("Appearance", "color_high", ColorToHex(config.colorHigh).c_str(), iniPath.c_str());
+    WritePrivateProfileStringA("Appearance", "color_critical", ColorToHex(config.colorCritical).c_str(), iniPath.c_str());
+    WritePrivateProfileStringA("Appearance", "enable_dynamic_colors", config.enableDynamicColors ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Appearance", "drop_shadow", config.dropShadow ? "1" : "0", iniPath.c_str());
 
     WritePrivateProfileStringA("Telemetry", "refresh_interval_ms", std::to_string(config.refreshIntervalMs).c_str(), iniPath.c_str());

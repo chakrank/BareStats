@@ -63,6 +63,9 @@ bool NvmlCollector::LoadNvml() {
     fnNvmlDeviceGetPowerUsage_ = (nvmlDeviceGetPowerUsage_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetPowerUsage");
     fnNvmlDeviceGetFanSpeed_ = (nvmlDeviceGetFanSpeed_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetFanSpeed");
     fnNvmlDeviceGetFanSpeed_v2_ = (nvmlDeviceGetFanSpeed_v2_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetFanSpeed_v2");
+    fnNvmlDeviceGetEnforcedPowerLimit_ = (nvmlDeviceGetEnforcedPowerLimit_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetEnforcedPowerLimit");
+    fnNvmlDeviceGetPowerManagementLimit_ = (nvmlDeviceGetPowerManagementLimit_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetPowerManagementLimit");
+    fnNvmlDeviceGetTemperatureThreshold_ = (nvmlDeviceGetTemperatureThreshold_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetTemperatureThreshold");
 
     if (!fnNvmlInit_ || !fnNvmlDeviceGetHandleByIndex_) {
         UnloadNvml();
@@ -140,11 +143,33 @@ bool NvmlCollector::Collect(GpuMetrics& metrics, uint32_t deviceIndex) {
         }
     }
 
+    // Temperature Slowdown Threshold (1 = NVML_TEMPERATURE_THRESHOLD_SLOWDOWN)
+    if (fnNvmlDeviceGetTemperatureThreshold_) {
+        unsigned int slowdownTemp = 0;
+        if (fnNvmlDeviceGetTemperatureThreshold_(deviceHandle_, 1, &slowdownTemp) == 0) {
+            metrics.tempSlowdownLimitC = slowdownTemp;
+        }
+    }
+
     // Power (mW -> W)
     if (fnNvmlDeviceGetPowerUsage_) {
         unsigned int powerMw = 0;
         if (fnNvmlDeviceGetPowerUsage_(deviceHandle_, &powerMw) == 0) {
             metrics.powerWatts = (powerMw + 500) / 1000; // Rounded to nearest Watt
+        }
+    }
+
+    // Power Limit (mW -> W)
+    if (fnNvmlDeviceGetEnforcedPowerLimit_) {
+        unsigned int limitMw = 0;
+        if (fnNvmlDeviceGetEnforcedPowerLimit_(deviceHandle_, &limitMw) == 0 && limitMw > 0) {
+            metrics.powerLimitWatts = (limitMw + 500) / 1000;
+        }
+    }
+    if (!metrics.powerLimitWatts.has_value() && fnNvmlDeviceGetPowerManagementLimit_) {
+        unsigned int limitMw = 0;
+        if (fnNvmlDeviceGetPowerManagementLimit_(deviceHandle_, &limitMw) == 0 && limitMw > 0) {
+            metrics.powerLimitWatts = (limitMw + 500) / 1000;
         }
     }
 
