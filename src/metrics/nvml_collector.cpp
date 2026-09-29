@@ -1,0 +1,176 @@
+#include "nvml_collector.h"
+#include <iostream>
+
+namespace BareStats {
+
+struct NvmlUtilization {
+    unsigned int gpu;
+    unsigned int memory;
+};
+
+struct NvmlMemory {
+    unsigned long long total;
+    unsigned long long free;
+    unsigned long long used;
+};
+
+NvmlCollector::NvmlCollector() {
+    LoadNvml();
+}
+
+NvmlCollector::~NvmlCollector() {
+    UnloadNvml();
+}
+
+bool NvmlCollector::LoadNvml() {
+    // Try system32 nvml.dll or default PATH
+    nvmlDll_ = LoadLibraryA("nvml.dll");
+    if (!nvmlDll_) {
+        // Fallback common path
+        nvmlDll_ = LoadLibraryA("C:\\Windows\\System32\\nvml.dll");
+    }
+    if (!nvmlDll_) {
+        nvmlDll_ = LoadLibraryA("C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvml.dll");
+    }
+
+    if (!nvmlDll_) {
+        isAvailable_ = false;
+        return false;
+    }
+
+    // Resolve functions
+    fnNvmlInit_ = (nvmlInit_t)GetProcAddress(nvmlDll_, "nvmlInit_v2");
+    if (!fnNvmlInit_) {
+        fnNvmlInit_ = (nvmlInit_t)GetProcAddress(nvmlDll_, "nvmlInit");
+    }
+
+    fnNvmlShutdown_ = (nvmlShutdown_t)GetProcAddress(nvmlDll_, "nvmlShutdown");
+    
+    fnNvmlDeviceGetCount_ = (nvmlDeviceGetCount_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetCount_v2");
+    if (!fnNvmlDeviceGetCount_) {
+        fnNvmlDeviceGetCount_ = (nvmlDeviceGetCount_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetCount");
+    }
+
+    fnNvmlDeviceGetHandleByIndex_ = (nvmlDeviceGetHandleByIndex_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetHandleByIndex_v2");
+    if (!fnNvmlDeviceGetHandleByIndex_) {
+        fnNvmlDeviceGetHandleByIndex_ = (nvmlDeviceGetHandleByIndex_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetHandleByIndex");
+    }
+
+    fnNvmlDeviceGetName_ = (nvmlDeviceGetName_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetName");
+    fnNvmlDeviceGetUtilizationRates_ = (nvmlDeviceGetUtilizationRates_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetUtilizationRates");
+    fnNvmlDeviceGetMemoryInfo_ = (nvmlDeviceGetMemoryInfo_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetMemoryInfo");
+    fnNvmlDeviceGetTemperature_ = (nvmlDeviceGetTemperature_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetTemperature");
+    fnNvmlDeviceGetPowerUsage_ = (nvmlDeviceGetPowerUsage_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetPowerUsage");
+    fnNvmlDeviceGetFanSpeed_ = (nvmlDeviceGetFanSpeed_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetFanSpeed");
+    fnNvmlDeviceGetFanSpeed_v2_ = (nvmlDeviceGetFanSpeed_v2_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetFanSpeed_v2");
+
+    if (!fnNvmlInit_ || !fnNvmlDeviceGetHandleByIndex_) {
+        UnloadNvml();
+        return false;
+    }
+
+    int res = fnNvmlInit_();
+    if (res != 0) { // NVML_SUCCESS = 0
+        UnloadNvml();
+        return false;
+    }
+
+    isAvailable_ = true;
+    return true;
+}
+
+void NvmlCollector::UnloadNvml() {
+    if (isAvailable_ && fnNvmlShutdown_) {
+        fnNvmlShutdown_();
+    }
+    if (nvmlDll_) {
+        FreeLibrary(nvmlDll_);
+        nvmlDll_ = nullptr;
+    }
+    isAvailable_ = false;
+    deviceHandle_ = nullptr;
+}
+
+bool NvmlCollector::Collect(GpuMetrics& metrics, uint32_t deviceIndex) {
+    if (!isAvailable_ || !fnNvmlDeviceGetHandleByIndex_) {
+        return false;
+    }
+
+    if (!deviceHandle_ || activeDeviceIndex_ != deviceIndex) {
+        void* handle = nullptr;
+        if (fnNvmlDeviceGetHandleByIndex_(deviceIndex, &handle) != 0 || !handle) {
+            return false;
+        }
+        deviceHandle_ = handle;
+        activeDeviceIndex_ = deviceIndex;
+    }
+
+    metrics.isAvailable = true;
+
+    // Get device name if not set
+    if (metrics.name.empty() && fnNvmlDeviceGetName_) {
+        char nameBuf[96] = {0};
+        if (fnNvmlDeviceGetName_(deviceHandle_, nameBuf, sizeof(nameBuf)) == 0) {
+            metrics.name = nameBuf;
+        }
+    }
+
+    // Utilization
+    if (fnNvmlDeviceGetUtilizationRates_) {
+        NvmlUtilization util{};
+        if (fnNvmlDeviceGetUtilizationRates_(deviceHandle_, &util) == 0) {
+            metrics.utilizationPercent = static_cast<double>(util.gpu);
+        }
+    }
+
+    // Memory
+    if (fnNvmlDeviceGetMemoryInfo_) {
+        NvmlMemory mem{};
+        if (fnNvmlDeviceGetMemoryInfo_(deviceHandle_, &mem) == 0) {
+            metrics.memoryTotalBytes = mem.total;
+            metrics.memoryUsedBytes = mem.used;
+        }
+    }
+
+    // Temperature (0 = NVML_TEMPERATURE_GPU)
+    if (fnNvmlDeviceGetTemperature_) {
+        unsigned int temp = 0;
+        if (fnNvmlDeviceGetTemperature_(deviceHandle_, 0, &temp) == 0) {
+            metrics.temperatureC = temp;
+        }
+    }
+
+    // Power (mW -> W)
+    if (fnNvmlDeviceGetPowerUsage_) {
+        unsigned int powerMw = 0;
+        if (fnNvmlDeviceGetPowerUsage_(deviceHandle_, &powerMw) == 0) {
+            metrics.powerWatts = (powerMw + 500) / 1000; // Rounded to nearest Watt
+        }
+    }
+
+    // Fan Speed
+    // Try FanSpeed (percentage)
+    if (fnNvmlDeviceGetFanSpeed_) {
+        unsigned int fanPct = 0;
+        if (fnNvmlDeviceGetFanSpeed_(deviceHandle_, &fanPct) == 0) {
+            metrics.fanSpeedPercent = fanPct;
+        }
+    }
+
+    // Try FanSpeed_v2 (fan 0)
+    if (fnNvmlDeviceGetFanSpeed_v2_) {
+        unsigned int fanSpeedVal = 0;
+        if (fnNvmlDeviceGetFanSpeed_v2_(deviceHandle_, 0, &fanSpeedVal) == 0) {
+            // Some drivers return RPM or % in fanSpeedVal
+            if (fanSpeedVal > 100) {
+                metrics.fanRpm = fanSpeedVal;
+            } else if (!metrics.fanSpeedPercent.has_value()) {
+                metrics.fanSpeedPercent = fanSpeedVal;
+            }
+        }
+    }
+
+    return true;
+}
+
+} // namespace BareStats
