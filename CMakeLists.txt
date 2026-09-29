@@ -40,6 +40,7 @@ target_link_libraries(BareStats PRIVATE
     user32
     gdi32
     shell32
+    dwmapi
 )
 
 # Copy config.example.ini to build output
