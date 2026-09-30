@@ -70,6 +70,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     }
 
     // Normal GUI Overlay mode
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"BareStats_SingleInstance_Mutex");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        // Another instance is already active! Wake it up with a launch roll-up flip animation
+        HWND existingWnd = FindWindowW(L"BareStatsOverlayClass", nullptr);
+        if (existingWnd) {
+            PostMessageW(existingWnd, OverlayWindow::WM_TRIGGER_LAUNCH_ANIM, 0, 0);
+        }
+        if (hMutex) CloseHandle(hMutex);
+        return 0; // Clean exit without duplicate instance
+    }
+
     std::string configPath = ConfigManager::GetDefaultConfigPath();
     AppConfig config = ConfigManager::Load(configPath);
 
@@ -79,6 +90,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     OverlayWindow overlay(config);
     if (!overlay.Initialize(hInstance)) {
+        if (hMutex) CloseHandle(hMutex);
         MessageBoxW(nullptr, L"Failed to initialize BareStats overlay window.", L"BareStats Error", MB_ICONERROR | MB_OK);
         return 1;
     }
@@ -91,6 +103,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     initialMetrics.memory = memoryCollector.Collect();
     initialMetrics.gpu = gpuCollector.Collect();
     overlay.UpdateMetrics(initialMetrics);
+    overlay.TriggerLaunchAnimation(initialMetrics);
 
     // Setup 1-second refresh timer
     SetTimer(overlay.GetHwnd(), TIMER_UPDATE_ID, config.refreshIntervalMs, nullptr);
@@ -111,5 +124,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     }
 
     KillTimer(overlay.GetHwnd(), TIMER_UPDATE_ID);
+    if (hMutex) CloseHandle(hMutex);
     return static_cast<int>(msg.wParam);
 }

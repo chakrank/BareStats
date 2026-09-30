@@ -24,8 +24,10 @@ public:
 
     void OnMoved();
     void ResetToPreset(PositionPreset preset = PositionPreset::BottomCenter);
+    void TriggerLaunchAnimation(const SystemMetrics& targetMetrics);
 
-    static const UINT ID_EXIT_MOVE_MODE = 2004;
+    static const UINT ID_EXIT_MOVE_MODE      = 2004;
+    static const UINT WM_TRIGGER_LAUNCH_ANIM = WM_USER + 101;
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -44,6 +46,10 @@ private:
     ULONG_PTR gdiplusToken_ = 0;
 
     bool isPositioningMode_ = false;
+    bool isAnimatingRollUp_ = false;
+    int animTicksRemaining_ = 0;
+    SystemMetrics animTargetMetrics_{};
+    SystemMetrics lastMetrics_{};
     std::vector<FormattedSegment> lastSegments_;
     int windowX_ = 0;
     int windowY_ = 0;
@@ -57,6 +63,7 @@ private:
     static const UINT_PTR HOTKEY_CTRL_SHIFT_M = 1001;
     static const UINT_PTR HOTKEY_CTRL_ALT_M   = 1002;
     static const UINT_PTR HOTKEY_CTRL_ALT_P   = 1003;
+    static const UINT_PTR TIMER_ANIM_ID       = 2005;
 
     static const UINT WM_TRAYICON = WM_USER + 100;
     static const UINT ID_TRAY_TOGGLE_MOVE = 2001;

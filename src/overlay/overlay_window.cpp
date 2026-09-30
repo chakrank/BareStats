@@ -158,6 +158,73 @@ LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             return 0;
         }
 
+        case WM_TRIGGER_LAUNCH_ANIM:
+            TriggerLaunchAnimation(lastMetrics_);
+            SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            return 0;
+
+        case WM_TIMER:
+            if (wParam == TIMER_ANIM_ID) {
+                animTicksRemaining_--;
+                if (animTicksRemaining_ <= 0) {
+                    KillTimer(hwnd_, TIMER_ANIM_ID);
+                    animTicksRemaining_ = 0;
+                    isAnimatingRollUp_ = false;
+                    lastSegments_ = Formatter::FormatSegments(animTargetMetrics_, &config_);
+                    RenderOverlay(lastSegments_);
+                    return 0;
+                }
+
+                float t = 1.0f - (static_cast<float>(animTicksRemaining_) / 20.0f);
+                // Ease-Out Quadratic: f(t) = 1 - (1 - t)^2
+                float progress = 1.0f - (1.0f - t) * (1.0f - t);
+
+                SystemMetrics cur = animTargetMetrics_;
+                cur.cpu.utilizationPercent = animTargetMetrics_.cpu.utilizationPercent * progress;
+                if (animTargetMetrics_.cpu.temperatureC.has_value()) {
+                    cur.cpu.temperatureC = *animTargetMetrics_.cpu.temperatureC * progress;
+                }
+                if (animTargetMetrics_.cpu.powerWatts.has_value()) {
+                    cur.cpu.powerWatts = *animTargetMetrics_.cpu.powerWatts * progress;
+                }
+                if (animTargetMetrics_.cpu.fanRpm.has_value()) {
+                    cur.cpu.fanRpm = static_cast<uint32_t>(*animTargetMetrics_.cpu.fanRpm * progress);
+                }
+
+                if (animTargetMetrics_.gpu.utilizationPercent.has_value()) {
+                    cur.gpu.utilizationPercent = *animTargetMetrics_.gpu.utilizationPercent * progress;
+                }
+                cur.gpu.memoryUsedBytes = static_cast<uint64_t>(animTargetMetrics_.gpu.memoryUsedBytes * progress);
+                cur.gpu.memoryTotalBytes = animTargetMetrics_.gpu.memoryTotalBytes; // Keep max static!
+                if (animTargetMetrics_.gpu.temperatureC.has_value()) {
+                    cur.gpu.temperatureC = static_cast<uint32_t>(*animTargetMetrics_.gpu.temperatureC * progress);
+                }
+                if (animTargetMetrics_.gpu.powerWatts.has_value()) {
+                    cur.gpu.powerWatts = static_cast<uint32_t>(*animTargetMetrics_.gpu.powerWatts * progress);
+                }
+                if (animTargetMetrics_.gpu.fanRpm.has_value()) {
+                    cur.gpu.fanRpm = static_cast<uint32_t>(*animTargetMetrics_.gpu.fanRpm * progress);
+                } else if (animTargetMetrics_.gpu.fanSpeedPercent.has_value()) {
+                    cur.gpu.fanSpeedPercent = static_cast<uint32_t>(*animTargetMetrics_.gpu.fanSpeedPercent * progress);
+                }
+
+                cur.memory.usedBytes = static_cast<uint64_t>(animTargetMetrics_.memory.usedBytes * progress);
+                cur.memory.totalBytes = animTargetMetrics_.memory.totalBytes; // Keep max static!
+
+                lastSegments_ = Formatter::FormatSegments(cur, &config_);
+                RenderOverlay(lastSegments_);
+                return 0;
+            }
+            break;
+
+        case WM_DISPLAYCHANGE:
+        case WM_SETTINGCHANGE: {
+            RecalculateWindowPosition(windowWidth_, windowHeight_);
+            SetWindowPos(hwnd_, HWND_TOPMOST, windowX_, windowY_, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+            RenderOverlay(lastSegments_);
+            return 0;
+        }
+
         case WM_WINDOWPOSCHANGING: {
             auto* pwp = reinterpret_cast<WINDOWPOS*>(lParam);
             if (!isPositioningMode_) {
@@ -326,23 +393,66 @@ void OverlayWindow::SetPositioningMode(bool enable) {
     RenderOverlay(lastSegments_);
 }
 
+void OverlayWindow::TriggerLaunchAnimation(const SystemMetrics& targetMetrics) {
+    animTargetMetrics_ = targetMetrics;
+    lastMetrics_ = targetMetrics;
+    animTicksRemaining_ = 20; // 20 frames * 40ms = 800ms
+    isAnimatingRollUp_ = true;
+    if (hwnd_) {
+        SetTimer(hwnd_, TIMER_ANIM_ID, 40, nullptr);
+    }
+
+    // Render initial 0-state frame immediately
+    SystemMetrics zeroMetrics = animTargetMetrics_;
+    zeroMetrics.cpu.utilizationPercent = 0.0;
+    if (zeroMetrics.cpu.temperatureC.has_value()) zeroMetrics.cpu.temperatureC = 0.0;
+    if (zeroMetrics.cpu.powerWatts.has_value()) zeroMetrics.cpu.powerWatts = 0.0;
+    if (zeroMetrics.cpu.fanRpm.has_value()) zeroMetrics.cpu.fanRpm = 0;
+
+    if (zeroMetrics.gpu.utilizationPercent.has_value()) zeroMetrics.gpu.utilizationPercent = 0.0;
+    zeroMetrics.gpu.memoryUsedBytes = 0;
+    // Keep max static! (zeroMetrics.gpu.memoryTotalBytes untouched)
+    if (zeroMetrics.gpu.temperatureC.has_value()) zeroMetrics.gpu.temperatureC = 0;
+    if (zeroMetrics.gpu.powerWatts.has_value()) zeroMetrics.gpu.powerWatts = 0;
+    if (zeroMetrics.gpu.fanRpm.has_value()) zeroMetrics.gpu.fanRpm = 0;
+    if (zeroMetrics.gpu.fanSpeedPercent.has_value()) zeroMetrics.gpu.fanSpeedPercent = 0;
+
+    zeroMetrics.memory.usedBytes = 0;
+    // Keep max static! (zeroMetrics.memory.totalBytes untouched)
+
+    lastSegments_ = Formatter::FormatSegments(zeroMetrics, &config_);
+    RenderOverlay(lastSegments_);
+}
+
 void OverlayWindow::OnMoved() {
     if (!hwnd_) return;
     RECT rc{};
     GetWindowRect(hwnd_, &rc);
     windowX_ = rc.left;
 
-    if (isPositioningMode_) {
-        windowY_ = rc.top;
-        config_.preset = PositionPreset::Custom;
-        config_.customX = rc.left;
-        config_.customY = rc.top + headerHeight_;
-    } else {
-        windowY_ = rc.top;
-        config_.preset = PositionPreset::Custom;
-        config_.customX = rc.left;
-        config_.customY = rc.top;
+    int actualY = isPositioningMode_ ? rc.top + headerHeight_ : rc.top;
+    windowY_ = isPositioningMode_ ? rc.top : rc.top;
+
+    config_.preset = PositionPreset::Custom;
+    config_.customX = rc.left;
+    config_.customY = actualY;
+
+    HMONITOR hMon = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(MONITORINFO);
+    if (GetMonitorInfoW(hMon, &mi)) {
+        config_.customRelX = rc.left - mi.rcMonitor.left;
+        config_.customRelY = actualY - mi.rcMonitor.top;
     }
+
+    auto allMonitors = MonitorHelper::EnumerateMonitors();
+    for (size_t i = 0; i < allMonitors.size(); ++i) {
+        if (allMonitors[i].handle == hMon) {
+            config_.monitorIndex = static_cast<int>(i);
+            break;
+        }
+    }
+
     ConfigManager::Save(ConfigManager::GetDefaultConfigPath(), config_);
 }
 
@@ -350,6 +460,8 @@ void OverlayWindow::ResetToPreset(PositionPreset preset) {
     config_.preset = preset;
     config_.customX = -1;
     config_.customY = -1;
+    config_.customRelX = -1;
+    config_.customRelY = -1;
     ConfigManager::Save(ConfigManager::GetDefaultConfigPath(), config_);
 
     RecalculateWindowPosition(windowWidth_, windowHeight_);
@@ -357,11 +469,32 @@ void OverlayWindow::ResetToPreset(PositionPreset preset) {
 }
 
 void OverlayWindow::RecalculateWindowPosition(int contentWidth, int contentHeight) {
-    if (config_.preset == PositionPreset::Custom && config_.customX >= 0 && config_.customY >= 0) {
-        windowX_ = config_.customX;
-        windowY_ = config_.customY;
+    auto monitor = MonitorHelper::GetMonitor(config_.monitorIndex);
+
+    if (config_.preset == PositionPreset::Custom) {
+        if (config_.customRelX >= 0 && config_.customRelY >= 0) {
+            windowX_ = monitor.rcMonitor.left + config_.customRelX;
+            windowY_ = monitor.rcMonitor.top + config_.customRelY;
+        } else if (config_.customX >= 0 && config_.customY >= 0) {
+            windowX_ = config_.customX;
+            windowY_ = config_.customY;
+        } else {
+            POINT pt = MonitorHelper::CalculatePosition(monitor, PositionPreset::BottomCenter, contentWidth, contentHeight, config_.margin, config_.margin);
+            windowX_ = pt.x;
+            windowY_ = pt.y;
+        }
+
+        // Clamp inside physical display bounds (rcMonitor) so it CAN sit cleanly on the taskbar without jumping up, while still guarding edges against disappearing off-screen!
+        int maxX = monitor.rcMonitor.right - contentWidth;
+        int maxY = monitor.rcMonitor.bottom - contentHeight;
+        if (maxX < monitor.rcMonitor.left) maxX = monitor.rcMonitor.left;
+        if (maxY < monitor.rcMonitor.top) maxY = monitor.rcMonitor.top;
+
+        if (windowX_ < monitor.rcMonitor.left) windowX_ = monitor.rcMonitor.left;
+        if (windowX_ > maxX) windowX_ = maxX;
+        if (windowY_ < monitor.rcMonitor.top) windowY_ = monitor.rcMonitor.top;
+        if (windowY_ > maxY) windowY_ = maxY;
     } else {
-        auto monitor = MonitorHelper::GetMonitor(config_.monitorIndex);
         POINT pt = MonitorHelper::CalculatePosition(monitor, config_.preset, contentWidth, contentHeight, config_.margin, config_.margin);
         windowX_ = pt.x;
         windowY_ = pt.y;
@@ -369,6 +502,8 @@ void OverlayWindow::RecalculateWindowPosition(int contentWidth, int contentHeigh
 }
 
 void OverlayWindow::UpdateMetrics(const SystemMetrics& metrics) {
+    lastMetrics_ = metrics;
+    if (isAnimatingRollUp_) return;
     lastSegments_ = Formatter::FormatSegments(metrics, &config_);
     RenderOverlay(lastSegments_);
 }

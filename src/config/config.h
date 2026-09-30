@@ -11,6 +11,8 @@ struct AppConfig {
     PositionPreset preset = PositionPreset::BottomCenter;
     int customX = -1;
     int customY = -1;
+    int customRelX = -1;
+    int customRelY = -1;
     int margin = 12;
 
     std::wstring fontFace = L"auto";
@@ -32,6 +34,8 @@ struct AppConfig {
     bool showGpuTemp = true;
     bool showGpuPower = true;
     bool showGpuFan = true;
+    bool showMaxMemory = true;         // If false, shows only current (e.g. 11.7GB instead of 11.7/16GB)
+    bool hideOfflineMetrics = false;   // If true, completely hides subsystems that are offline/unavailable
 };
 
 class ConfigManager {

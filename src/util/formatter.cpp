@@ -31,24 +31,26 @@ std::wstring Formatter::FormatBytesGb(uint64_t usedBytes, uint64_t totalBytes) {
     return oss.str();
 }
 
-static void AppendMemorySegments(std::vector<FormattedSegment>& segments, uint64_t usedBytes, uint64_t totalBytes, MetricSeverity sev) {
+static void AppendMemorySegments(std::vector<FormattedSegment>& segments, uint64_t usedBytes, uint64_t totalBytes, MetricSeverity sev, bool showMax = true) {
     double usedGb = static_cast<double>(usedBytes) / (1024.0 * 1024.0 * 1024.0);
-    double totalGb = static_cast<double>(totalBytes) / (1024.0 * 1024.0 * 1024.0);
 
     std::wostringstream ossUsed;
     ossUsed << std::fixed << std::setprecision(1) << usedGb;
     segments.push_back({ ossUsed.str(), sev, SegmentType::Number, true, false }); // Used number: Prominent Bold
 
-    segments.push_back({ L"/", sev, SegmentType::Unit, false, false });         // Slash: Normal
+    if (showMax && totalBytes > 0) {
+        double totalGb = static_cast<double>(totalBytes) / (1024.0 * 1024.0 * 1024.0);
+        segments.push_back({ L"/", sev, SegmentType::Unit, false, false });         // Slash: Normal
 
-    std::wostringstream ossTotal;
-    double rounded = std::round(totalGb);
-    if (std::abs(totalGb - rounded) < 0.15) {
-        ossTotal << static_cast<uint32_t>(rounded);
-    } else {
-        ossTotal << std::fixed << std::setprecision(1) << totalGb;
+        std::wostringstream ossTotal;
+        double rounded = std::round(totalGb);
+        if (std::abs(totalGb - rounded) < 0.15) {
+            ossTotal << static_cast<uint32_t>(rounded);
+        } else {
+            ossTotal << std::fixed << std::setprecision(1) << totalGb;
+        }
+        segments.push_back({ ossTotal.str(), sev, SegmentType::Number, true, false }); // Total number: Prominent Bold
     }
-    segments.push_back({ ossTotal.str(), sev, SegmentType::Number, true, false }); // Total number: Prominent Bold
 
     segments.push_back({ L"GB", sev, SegmentType::Unit, false, false });         // Unit: Normal
 }
@@ -62,6 +64,8 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
     bool showGpuTemp = !config || config->showGpuTemp;
     bool showGpuPower = !config || config->showGpuPower;
     bool showGpuFan = !config || config->showGpuFan;
+    bool showMaxMemory = !config || config->showMaxMemory;
+    bool hideOffline = config && config->hideOfflineMetrics;
     bool enableColors = !config || config->enableDynamicColors;
 
     auto applySeverity = [enableColors](MetricSeverity sev) -> MetricSeverity {
@@ -106,7 +110,7 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
     }
 
     // GPU Block
-    if (showGpu) {
+    if (showGpu && (!hideOffline || metrics.gpu.isAvailable)) {
         if (hasPreviousBlock) {
             segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
         }
@@ -114,17 +118,23 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
         segments.push_back({ L" GPU ", MetricSeverity::Normal, SegmentType::Label, false, false });
 
         if (metrics.gpu.isAvailable) {
-            // GPU Util
-            MetricSeverity gpuSev = applySeverity(GetSeverity(metrics.gpu.utilizationPercent, 80.0, 90.0));
-            segments.push_back({ std::to_wstring(static_cast<int>(std::round(metrics.gpu.utilizationPercent))), gpuSev, SegmentType::Number, true, false });
-            segments.push_back({ L"%", gpuSev, SegmentType::Unit, false, false });
+            bool hasPrintedData = false;
+
+            // GPU Util (only render if known - never output false 0%)
+            if (metrics.gpu.utilizationPercent.has_value()) {
+                MetricSeverity gpuSev = applySeverity(GetSeverity(*metrics.gpu.utilizationPercent, 80.0, 90.0));
+                segments.push_back({ std::to_wstring(static_cast<int>(std::round(*metrics.gpu.utilizationPercent))), gpuSev, SegmentType::Number, true, false });
+                segments.push_back({ L"%", gpuSev, SegmentType::Unit, false, false });
+                hasPrintedData = true;
+            }
 
             // VRAM
             if (metrics.gpu.memoryTotalBytes > 0) {
                 double vramPct = (static_cast<double>(metrics.gpu.memoryUsedBytes) / metrics.gpu.memoryTotalBytes) * 100.0;
                 MetricSeverity vramSev = applySeverity(GetSeverity(vramPct, 80.0, 90.0));
-                segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
-                AppendMemorySegments(segments, metrics.gpu.memoryUsedBytes, metrics.gpu.memoryTotalBytes, vramSev);
+                if (hasPrintedData) segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
+                AppendMemorySegments(segments, metrics.gpu.memoryUsedBytes, metrics.gpu.memoryTotalBytes, vramSev, showMaxMemory);
+                hasPrintedData = true;
             }
 
             // GPU Temp
@@ -135,9 +145,10 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
                 if (critLimit > 83.0) critLimit = 83.0;
                 double highLimit = critLimit - 8.0;
                 MetricSeverity tempSev = applySeverity(GetSeverity(*metrics.gpu.temperatureC, highLimit, critLimit));
-                segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
+                if (hasPrintedData) segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
                 segments.push_back({ std::to_wstring(*metrics.gpu.temperatureC), tempSev, SegmentType::Number, true, false });
                 segments.push_back({ L"\x00B0\x0043", tempSev, SegmentType::Unit, false, false });
+                hasPrintedData = true;
             }
 
             // GPU Power
@@ -147,22 +158,28 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
                     double powerPct = (static_cast<double>(*metrics.gpu.powerWatts) / *metrics.gpu.powerLimitWatts) * 100.0;
                     powerSev = applySeverity(GetSeverity(powerPct, 85.0, 95.0));
                 }
-                segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
+                if (hasPrintedData) segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
                 segments.push_back({ std::to_wstring(*metrics.gpu.powerWatts), powerSev, SegmentType::Number, true, false });
                 segments.push_back({ L"W", powerSev, SegmentType::Unit, false, false });
+                hasPrintedData = true;
             }
 
             // GPU Fan
             if (showGpuFan) {
-                segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
                 if (metrics.gpu.fanRpm.has_value()) {
+                    if (hasPrintedData) segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
                     segments.push_back({ std::to_wstring(*metrics.gpu.fanRpm), MetricSeverity::Normal, SegmentType::Number, true, false });
                     segments.push_back({ L"RPM", MetricSeverity::Normal, SegmentType::Unit, false, false });
                 } else if (metrics.gpu.fanSpeedPercent.has_value()) {
                     MetricSeverity fanSev = applySeverity(GetSeverity(*metrics.gpu.fanSpeedPercent, 80.0, 95.0));
+                    if (hasPrintedData) segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
                     segments.push_back({ std::to_wstring(*metrics.gpu.fanSpeedPercent), fanSev, SegmentType::Number, true, false });
                     segments.push_back({ L"%", fanSev, SegmentType::Unit, false, false });
                 }
+            }
+
+            if (!hasPrintedData) {
+                segments.push_back({ L"N/A", MetricSeverity::Normal, SegmentType::Unit, true, false });
             }
         } else {
             segments.push_back({ L"N/A", MetricSeverity::Normal, SegmentType::Unit, true, false });
@@ -182,7 +199,7 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
         if (metrics.memory.totalBytes > 0) {
             double ramPct = (static_cast<double>(metrics.memory.usedBytes) / metrics.memory.totalBytes) * 100.0;
             MetricSeverity ramSev = applySeverity(GetSeverity(ramPct, 80.0, 90.0));
-            AppendMemorySegments(segments, metrics.memory.usedBytes, metrics.memory.totalBytes, ramSev);
+            AppendMemorySegments(segments, metrics.memory.usedBytes, metrics.memory.totalBytes, ramSev, showMaxMemory);
         } else {
             segments.push_back({ L"N/A", MetricSeverity::Normal, SegmentType::Unit, true, false });
         }

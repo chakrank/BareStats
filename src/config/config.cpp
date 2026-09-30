@@ -62,7 +62,10 @@ static bool CreateDefaultConfigFile(const std::string& iniPath, const AppConfig&
         << "preset = " << MonitorHelper::PresetToString(config.preset) << "\n\n"
         << "# Custom coordinates (used when preset = custom or after Ctrl+Shift+M reposition)\n"
         << "custom_x = " << config.customX << "\n"
-        << "custom_y = " << config.customY << "\n\n"
+        << "custom_y = " << config.customY << "\n"
+        << "# Monitor-relative coordinates for multi-monitor / resolution stability\n"
+        << "custom_rel_x = " << config.customRelX << "\n"
+        << "custom_rel_y = " << config.customRelY << "\n\n"
         << "# Edge margin in pixels\n"
         << "margin = " << config.margin << "\n\n"
         << "[Appearance]\n"
@@ -93,7 +96,11 @@ static bool CreateDefaultConfigFile(const std::string& iniPath, const AppConfig&
         << "show_ram = " << (config.showRam ? "1" : "0") << "\n"
         << "show_gpu_temp = " << (config.showGpuTemp ? "1" : "0") << "\n"
         << "show_gpu_power = " << (config.showGpuPower ? "1" : "0") << "\n"
-        << "show_gpu_fan = " << (config.showGpuFan ? "1" : "0") << "\n";
+        << "show_gpu_fan = " << (config.showGpuFan ? "1" : "0") << "\n"
+        << "# Show max memory total (1 = 11.7/16GB, 0 = 11.7GB current only)\n"
+        << "show_max_memory = " << (config.showMaxMemory ? "1" : "0") << "\n"
+        << "# Automatically hide offline/unavailable metrics after launch (1 = hide, 0 = show N/A)\n"
+        << "hide_offline_metrics = " << (config.hideOfflineMetrics ? "1" : "0") << "\n";
 
     HANDLE hFile = CreateFileA(iniPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile != INVALID_HANDLE_VALUE) {
@@ -137,6 +144,8 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
 
     config.customX = GetPrivateProfileIntA("Position", "custom_x", config.customX, iniPath.c_str());
     config.customY = GetPrivateProfileIntA("Position", "custom_y", config.customY, iniPath.c_str());
+    config.customRelX = GetPrivateProfileIntA("Position", "custom_rel_x", config.customRelX, iniPath.c_str());
+    config.customRelY = GetPrivateProfileIntA("Position", "custom_rel_y", config.customRelY, iniPath.c_str());
     config.margin = GetPrivateProfileIntA("Position", "margin", config.margin, iniPath.c_str());
 
     // [Appearance]
@@ -205,6 +214,8 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
     config.showGpuTemp = ReadIniBool("Telemetry", "show_gpu_temp", config.showGpuTemp, iniPath);
     config.showGpuPower = ReadIniBool("Telemetry", "show_gpu_power", config.showGpuPower, iniPath);
     config.showGpuFan = ReadIniBool("Telemetry", "show_gpu_fan", config.showGpuFan, iniPath);
+    config.showMaxMemory = ReadIniBool("Telemetry", "show_max_memory", config.showMaxMemory, iniPath);
+    config.hideOfflineMetrics = ReadIniBool("Telemetry", "hide_offline_metrics", config.hideOfflineMetrics, iniPath);
 
     return config;
 }
@@ -219,6 +230,8 @@ bool ConfigManager::Save(const std::string& iniPath, const AppConfig& config) {
     WritePrivateProfileStringA("Position", "preset", MonitorHelper::PresetToString(config.preset).c_str(), iniPath.c_str());
     WritePrivateProfileStringA("Position", "custom_x", std::to_string(config.customX).c_str(), iniPath.c_str());
     WritePrivateProfileStringA("Position", "custom_y", std::to_string(config.customY).c_str(), iniPath.c_str());
+    WritePrivateProfileStringA("Position", "custom_rel_x", std::to_string(config.customRelX).c_str(), iniPath.c_str());
+    WritePrivateProfileStringA("Position", "custom_rel_y", std::to_string(config.customRelY).c_str(), iniPath.c_str());
     WritePrivateProfileStringA("Position", "margin", std::to_string(config.margin).c_str(), iniPath.c_str());
 
     // Convert fontFace to UTF-8
@@ -252,6 +265,8 @@ bool ConfigManager::Save(const std::string& iniPath, const AppConfig& config) {
     WritePrivateProfileStringA("Telemetry", "show_gpu_temp", config.showGpuTemp ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_gpu_power", config.showGpuPower ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_gpu_fan", config.showGpuFan ? "1" : "0", iniPath.c_str());
+    WritePrivateProfileStringA("Telemetry", "show_max_memory", config.showMaxMemory ? "1" : "0", iniPath.c_str());
+    WritePrivateProfileStringA("Telemetry", "hide_offline_metrics", config.hideOfflineMetrics ? "1" : "0", iniPath.c_str());
 
     return true;
 }

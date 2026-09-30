@@ -16,7 +16,7 @@ struct CpuMetrics {
 struct GpuMetrics {
     bool isAvailable = false;
     std::string name;
-    double utilizationPercent = 0.0;
+    std::optional<double> utilizationPercent;
     uint64_t memoryUsedBytes = 0;
     uint64_t memoryTotalBytes = 0;
     std::optional<uint32_t> temperatureC;
