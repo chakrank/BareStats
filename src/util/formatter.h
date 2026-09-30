@@ -14,9 +14,19 @@ enum class MetricSeverity {
     Critical
 };
 
+enum class SegmentType {
+    Label,       // e.g. " CPU ", " GPU ", " RAM "
+    Number,      // e.g. "14", "35", "16", "0.3", "16"
+    Unit,        // e.g. "%", "°C", "W", "RPM", "/", "GB", "N/A"
+    Separator    // e.g. "│"
+};
+
 struct FormattedSegment {
     std::wstring text;
     MetricSeverity severity = MetricSeverity::Normal;
+    SegmentType type = SegmentType::Number;
+    bool isBold = false;
+    bool isSeparator = false;
 };
 
 class Formatter {

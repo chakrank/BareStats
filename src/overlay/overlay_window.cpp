@@ -397,6 +397,67 @@ static void DrawVectorMoveIcon(Graphics& graphics, float cx, float cy, float rad
     graphics.FillPolygon(&brush, ptDown, 3);
 }
 
+static std::wstring ResolveFontFamily(const std::wstring& requestedFont) {
+    if (requestedFont.empty() || _wcsicmp(requestedFont.c_str(), L"auto") == 0 || _wcsicmp(requestedFont.c_str(), L"system") == 0) {
+        NONCLIENTMETRICSW ncm{};
+        ncm.cbSize = sizeof(NONCLIENTMETRICSW);
+        if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICSW), &ncm, 0)) {
+            if (wcslen(ncm.lfMessageFont.lfFaceName) > 0) {
+                return ncm.lfMessageFont.lfFaceName;
+            }
+        }
+        return L"Segoe UI";
+    }
+    return requestedFont;
+}
+
+static std::unique_ptr<Font> CreateOverlayFont(const std::wstring& requestedFace,
+                                               const std::wstring& requestedWeight,
+                                               int fontSize) {
+    REAL emSize = static_cast<REAL>(fontSize > 0 ? fontSize : 13);
+    std::wstring effectiveFace = ResolveFontFamily(requestedFace);
+
+    bool isBold = (_wcsicmp(requestedWeight.c_str(), L"bold") == 0);
+    bool isRegular = (_wcsicmp(requestedWeight.c_str(), L"regular") == 0);
+
+    // If semibold (default, matches Windows Taskbar & NVIDIA Overlay)
+    if (!isBold && !isRegular) {
+        if (_wcsicmp(effectiveFace.c_str(), L"Segoe UI") == 0 ||
+            _wcsicmp(effectiveFace.c_str(), L"Segoe UI Semibold") == 0) {
+            auto font = std::make_unique<Font>(L"Segoe UI Semibold", emSize, FontStyleRegular, UnitPixel);
+            if (font->GetLastStatus() == Status::Ok) {
+                return font;
+            }
+        }
+
+        std::wstring semiFace = effectiveFace + L" Semibold";
+        auto font = std::make_unique<Font>(semiFace.c_str(), emSize, FontStyleRegular, UnitPixel);
+        if (font->GetLastStatus() == Status::Ok) {
+            return font;
+        }
+
+        auto fontBold = std::make_unique<Font>(effectiveFace.c_str(), emSize, FontStyleBold, UnitPixel);
+        if (fontBold->GetLastStatus() == Status::Ok) {
+            return fontBold;
+        }
+    }
+
+    if (isBold) {
+        auto font = std::make_unique<Font>(effectiveFace.c_str(), emSize, FontStyleBold, UnitPixel);
+        if (font->GetLastStatus() == Status::Ok) {
+            return font;
+        }
+        return std::make_unique<Font>(L"Segoe UI", emSize, FontStyleBold, UnitPixel);
+    }
+
+    // Regular
+    auto font = std::make_unique<Font>(effectiveFace.c_str(), emSize, FontStyleRegular, UnitPixel);
+    if (font->GetLastStatus() == Status::Ok) {
+        return font;
+    }
+    return std::make_unique<Font>(L"Segoe UI", emSize, FontStyleRegular, UnitPixel);
+}
+
 void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments) {
     if (!hwnd_ || segments.empty()) return;
 
@@ -410,11 +471,8 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
 
     std::wstring headerText = L"MOVE MODE: Drag to reposition \x2022 Click outside or Ctrl+Shift+M to lock";
 
-    // Fonts
-    auto font = std::make_unique<Font>(config_.fontFace.c_str(), static_cast<REAL>(config_.fontSize), FontStyleBold, UnitPixel);
-    if (font->GetLastStatus() != Status::Ok) {
-        font = std::make_unique<Font>(L"Consolas", static_cast<REAL>(config_.fontSize), FontStyleBold, UnitPixel);
-    }
+    // Uniform font matching NVIDIA Overlay (eliminates baseline/height mismatch)
+    auto overlayFont = CreateOverlayFont(config_.fontFace, config_.fontWeight, config_.fontSize);
 
     auto headerFont = std::make_unique<Font>(L"Segoe UI", 11.0f, FontStyleBold, UnitPixel);
     if (headerFont->GetLastStatus() != Status::Ok) {
@@ -424,27 +482,30 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
     StringFormat format(StringFormat::GenericTypographic());
     format.SetFormatFlags(format.GetFormatFlags() | StringFormatFlagsMeasureTrailingSpaces | StringFormatFlagsNoWrap);
 
-    // Concatenate full text to measure layout bounds
-    std::wstring fullText;
-    for (const auto& seg : segments) {
-        fullText += seg.text;
-    }
-
     RectF layoutRect(0, 0, 4000, 300);
-    RectF statsBounds{};
     RectF headerBounds{};
+    REAL totalStatsWidth = 0.0f;
+    REAL maxStatsHeight = 0.0f;
 
     {
         Graphics measureGraphics(memDC);
-        measureGraphics.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
-        measureGraphics.MeasureString(fullText.c_str(), static_cast<int>(fullText.length()), font.get(), PointF(0, 0), &format, &statsBounds);
+        measureGraphics.SetTextRenderingHint(TextRenderingHintAntiAlias);
+        for (const auto& seg : segments) {
+            if (seg.text.empty()) continue;
+            RectF segBounds{};
+            measureGraphics.MeasureString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(0, 0), &format, &segBounds);
+            totalStatsWidth += segBounds.Width;
+            if (segBounds.Height > maxStatsHeight) {
+                maxStatsHeight = segBounds.Height;
+            }
+        }
         if (isPositioningMode_) {
             measureGraphics.MeasureString(headerText.c_str(), -1, headerFont.get(), layoutRect, &headerBounds);
         }
     }
 
-    int statsWidth = static_cast<int>(std::ceil(statsBounds.Width));
-    int statsHeight = static_cast<int>(std::ceil(statsBounds.Height));
+    int statsWidth = static_cast<int>(std::ceil(totalStatsWidth));
+    int statsHeight = static_cast<int>(std::ceil(maxStatsHeight));
 
     int contentWidth = 0;
     int contentHeight = 0;
@@ -494,7 +555,7 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
     {
         Graphics graphics(memDC);
         graphics.SetSmoothingMode(SmoothingModeAntiAlias);
-        graphics.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+        graphics.SetTextRenderingHint(TextRenderingHintAntiAlias);
 
         if (isPositioningMode_) {
             // 1. Box background plate behind the whole overlay
@@ -529,11 +590,23 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
         REAL statsX = 6.0f;
         REAL statsY = isPositioningMode_ ? static_cast<REAL>(headerHeight_ + 5) : 5.0f;
 
-        // Base text brush
+        // Base text brush (bright crisp white for numbers and units)
         BYTE rBase = GetRValue(config_.textColor);
         BYTE gBase = GetGValue(config_.textColor);
         BYTE bBase = GetBValue(config_.textColor);
         SolidBrush textBrush(Color(255, rBase, gBase, bBase));
+
+        // Label brush (soft muted silver #A0A0A0 for category titles CPU, GPU, RAM)
+        BYTE rLabel = GetRValue(config_.labelColor);
+        BYTE gLabel = GetGValue(config_.labelColor);
+        BYTE bLabel = GetBValue(config_.labelColor);
+        SolidBrush labelBrush(Color(255, rLabel, gLabel, bLabel));
+
+        // Subtler separator brush (quiet subtle divider #6E6E6E)
+        BYTE rSep = GetRValue(config_.separatorColor);
+        BYTE gSep = GetGValue(config_.separatorColor);
+        BYTE bSep = GetBValue(config_.separatorColor);
+        SolidBrush sepBrush(Color(255, rSep, gSep, bSep));
 
         // High text brush (Yellow)
         BYTE rHigh = GetRValue(config_.colorHigh);
@@ -547,7 +620,7 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
         BYTE bCrit = GetBValue(config_.colorCritical);
         SolidBrush critBrush(Color(255, rCrit, gCrit, bCrit));
 
-        SolidBrush shadowBrush(Color(220, 0, 0, 0));
+        SolidBrush shadowBrush(Color(180, 0, 0, 0));
 
         // Render each segment token-by-token
         REAL curX = statsX;
@@ -555,23 +628,26 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
             if (seg.text.empty()) continue;
 
             RectF segBounds{};
-            graphics.MeasureString(seg.text.c_str(), static_cast<int>(seg.text.length()), font.get(), PointF(0, 0), &format, &segBounds);
+            graphics.MeasureString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(0, 0), &format, &segBounds);
 
-            // Draw shadow for contrast
+            // Draw smooth single-offset shadow for contrast
             if (config_.dropShadow) {
-                graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), font.get(), PointF(curX + 1.0f, statsY + 1.0f), &format, &shadowBrush);
-                graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), font.get(), PointF(curX + 2.0f, statsY + 2.0f), &format, &shadowBrush);
+                graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(curX + 1.0f, statsY + 1.0f), &format, &shadowBrush);
             }
 
-            // Pick color brush by severity
+            // Pick color brush by segment type / severity
             Brush* pBrush = &textBrush;
-            if (seg.severity == MetricSeverity::Critical) {
+            if (seg.type == SegmentType::Separator || seg.isSeparator) {
+                pBrush = &sepBrush;
+            } else if (seg.type == SegmentType::Label) {
+                pBrush = &labelBrush;
+            } else if (seg.severity == MetricSeverity::Critical) {
                 pBrush = &critBrush;
             } else if (seg.severity == MetricSeverity::High) {
                 pBrush = &highBrush;
             }
 
-            graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), font.get(), PointF(curX, statsY), &format, pBrush);
+            graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(curX, statsY), &format, pBrush);
 
             curX += segBounds.Width;
         }

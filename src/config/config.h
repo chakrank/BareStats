@@ -13,11 +13,14 @@ struct AppConfig {
     int customY = -1;
     int margin = 12;
 
-    std::wstring fontFace = L"Consolas";
-    int fontSize = 14;
-    COLORREF textColor = RGB(220, 220, 220); // crisp light silver-white
-    COLORREF colorHigh = RGB(255, 215, 0);   // yellow for high utilization
-    COLORREF colorCritical = RGB(255, 77, 77); // red for critical / near-max
+    std::wstring fontFace = L"auto";
+    std::wstring fontWeight = L"semibold";
+    int fontSize = 13;
+    COLORREF textColor = RGB(255, 255, 255);       // bright crisp white for data and units
+    COLORREF labelColor = RGB(160, 160, 160);      // soft muted silver for labels
+    COLORREF separatorColor = RGB(110, 110, 110);  // quiet subtle divider
+    COLORREF colorHigh = RGB(255, 215, 0);         // yellow for high utilization
+    COLORREF colorCritical = RGB(255, 77, 77);     // red for critical / near-max
     bool enableDynamicColors = true;
     bool dropShadow = true;
 

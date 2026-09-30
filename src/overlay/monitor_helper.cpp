@@ -94,18 +94,15 @@ POINT MonitorHelper::CalculatePosition(const MonitorInfo& monitor, PositionPrese
             pt.x = work.left + marginX;
             pt.y = work.bottom - windowHeight - marginY;
             break;
-        case PositionPreset::BottomCenter:
-        default:
-            pt.x = work.left + (workWidth - windowWidth) / 2;
-            pt.y = work.bottom - windowHeight - marginY;
-            break;
         case PositionPreset::BottomRight:
             pt.x = work.right - windowWidth - marginX;
             pt.y = work.bottom - windowHeight - marginY;
             break;
         case PositionPreset::Custom:
-            pt.x = work.left + marginX;
-            pt.y = work.top + marginY;
+        case PositionPreset::BottomCenter:
+        default:
+            pt.x = work.left + (workWidth - windowWidth) / 2;
+            pt.y = work.bottom - windowHeight - marginY;
             break;
     }
     return pt;
