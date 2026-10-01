@@ -7,6 +7,8 @@
 #include <shellapi.h>
 #include <string>
 
+#include <functional>
+
 namespace BareStats {
 
 class OverlayWindow {
@@ -26,8 +28,12 @@ public:
     void ResetToPreset(PositionPreset preset = PositionPreset::BottomCenter);
     void TriggerLaunchAnimation(const SystemMetrics& targetMetrics);
 
+    void SetDisplayStateCallback(std::function<void(bool /*screenOn*/)> cb) { onDisplayStateChanged_ = std::move(cb); }
+    void SetTelemetryCallback(std::function<void()> cb) { onTelemetryReady_ = std::move(cb); }
+
     static const UINT ID_EXIT_MOVE_MODE      = 2004;
     static const UINT WM_TRIGGER_LAUNCH_ANIM = WM_USER + 101;
+    static const UINT WM_TELEMETRY_UPDATED   = WM_USER + 102;
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -44,6 +50,11 @@ private:
     HWND hwnd_ = nullptr;
     HINSTANCE hInstance_ = nullptr;
     ULONG_PTR gdiplusToken_ = 0;
+    HPOWERNOTIFY hPowerNotify_ = nullptr;
+
+    std::function<void(bool)> onDisplayStateChanged_;
+    std::function<void()> onTelemetryReady_;
+    std::wstring lastRenderedText_;
 
     bool isPositioningMode_ = false;
     bool isAnimatingRollUp_ = false;

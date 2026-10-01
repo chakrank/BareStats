@@ -14,6 +14,7 @@ set(SOURCES
     src/metrics/memory_collector.cpp
     src/metrics/nvml_collector.cpp
     src/metrics/gpu_collector.cpp
+    src/metrics/telemetry_engine.cpp
     src/overlay/overlay_window.cpp
     src/overlay/monitor_helper.cpp
     src/config/config.cpp
@@ -26,6 +27,7 @@ set(HEADERS
     src/metrics/memory_collector.h
     src/metrics/nvml_collector.h
     src/metrics/gpu_collector.h
+    src/metrics/telemetry_engine.h
     src/overlay/overlay_window.h
     src/overlay/monitor_helper.h
     src/config/config.h
@@ -41,6 +43,7 @@ target_link_libraries(BareStats PRIVATE
     gdi32
     shell32
     dwmapi
+    powrprof
 )
 
 # Copy config.example.ini to build output

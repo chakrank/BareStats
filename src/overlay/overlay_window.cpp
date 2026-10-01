@@ -72,6 +72,11 @@ OverlayWindow::~OverlayWindow() {
 
     RemoveTrayIcon();
 
+    if (hPowerNotify_) {
+        UnregisterPowerSettingNotification(hPowerNotify_);
+        hPowerNotify_ = nullptr;
+    }
+
     if (hwnd_) {
         UnregisterHotKey(hwnd_, HOTKEY_CTRL_SHIFT_M);
         UnregisterHotKey(hwnd_, HOTKEY_CTRL_ALT_M);
@@ -158,6 +163,12 @@ LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             return 0;
         }
 
+        case WM_TELEMETRY_UPDATED:
+            if (onTelemetryReady_) {
+                onTelemetryReady_();
+            }
+            return 0;
+
         case WM_TRIGGER_LAUNCH_ANIM:
             TriggerLaunchAnimation(lastMetrics_);
             SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -170,8 +181,12 @@ LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                     KillTimer(hwnd_, TIMER_ANIM_ID);
                     animTicksRemaining_ = 0;
                     isAnimatingRollUp_ = false;
+                    lastRenderedText_.clear();
                     lastSegments_ = Formatter::FormatSegments(animTargetMetrics_, &config_);
                     RenderOverlay(lastSegments_);
+
+                    // Startup Working Set Trimming: Release initialization pages
+                    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
                     return 0;
                 }
 
@@ -216,6 +231,20 @@ LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 return 0;
             }
             break;
+
+        case WM_POWERBROADCAST:
+            if (wParam == PBT_POWERSETTINGCHANGE) {
+                auto* pSetting = reinterpret_cast<POWERBROADCAST_SETTING*>(lParam);
+                if (pSetting && IsEqualGUID(pSetting->PowerSetting, GUID_CONSOLE_DISPLAY_STATE)) {
+                    DWORD state = *reinterpret_cast<const DWORD*>(pSetting->Data);
+                    // 0 = Off, 1 = On, 2 = Dimmed
+                    bool screenActive = (state != 0);
+                    if (onDisplayStateChanged_) {
+                        onDisplayStateChanged_(screenActive);
+                    }
+                }
+            }
+            return TRUE;
 
         case WM_DISPLAYCHANGE:
         case WM_SETTINGCHANGE: {
@@ -294,6 +323,8 @@ bool OverlayWindow::Initialize(HINSTANCE hInstance) {
     RegisterHotKey(hwnd_, HOTKEY_CTRL_ALT_P, MOD_CONTROL | MOD_ALT, 'P');
 
     SetupTrayIcon();
+
+    hPowerNotify_ = RegisterPowerSettingNotification(hwnd_, &GUID_CONSOLE_DISPLAY_STATE, DEVICE_NOTIFY_WINDOW_HANDLE);
 
     return true;
 }
@@ -386,10 +417,14 @@ void OverlayWindow::SetPositioningMode(bool enable) {
         config_.customX = windowX_;
         config_.customY = windowY_;
         ConfigManager::Save(ConfigManager::GetDefaultConfigPath(), config_);
+
+        // Working Set Trimming: Release repositioning pages
+        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     }
     SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, exStyle);
     SetWindowPos(hwnd_, HWND_TOPMOST, windowX_, windowY_, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
+    lastRenderedText_.clear();
     RenderOverlay(lastSegments_);
 }
 
@@ -420,6 +455,7 @@ void OverlayWindow::TriggerLaunchAnimation(const SystemMetrics& targetMetrics) {
     zeroMetrics.memory.usedBytes = 0;
     // Keep max static! (zeroMetrics.memory.totalBytes untouched)
 
+    lastRenderedText_.clear();
     lastSegments_ = Formatter::FormatSegments(zeroMetrics, &config_);
     RenderOverlay(lastSegments_);
 }
@@ -464,6 +500,7 @@ void OverlayWindow::ResetToPreset(PositionPreset preset) {
     config_.customRelY = -1;
     ConfigManager::Save(ConfigManager::GetDefaultConfigPath(), config_);
 
+    lastRenderedText_.clear();
     RecalculateWindowPosition(windowWidth_, windowHeight_);
     RenderOverlay(lastSegments_);
 }
@@ -504,7 +541,23 @@ void OverlayWindow::RecalculateWindowPosition(int contentWidth, int contentHeigh
 void OverlayWindow::UpdateMetrics(const SystemMetrics& metrics) {
     lastMetrics_ = metrics;
     if (isAnimatingRollUp_) return;
-    lastSegments_ = Formatter::FormatSegments(metrics, &config_);
+
+    auto segments = Formatter::FormatSegments(metrics, &config_);
+
+    // 15-Nanosecond Dirty Frame Check:
+    // If formatted text is identical and we are not in interactive move mode, skip 100% of GDI+ redraw!
+    std::wstring fullText;
+    fullText.reserve(128);
+    for (const auto& seg : segments) {
+        fullText += seg.text;
+    }
+
+    if (!isPositioningMode_ && fullText == lastRenderedText_) {
+        return; // Zero work! No DIB section, no GDI+, no UpdateLayeredWindow
+    }
+
+    lastRenderedText_ = std::move(fullText);
+    lastSegments_ = std::move(segments);
     RenderOverlay(lastSegments_);
 }
 

@@ -12,9 +12,9 @@
 #include "config/config.h"
 #include "util/formatter.h"
 
-using namespace BareStats;
+#include "metrics/telemetry_engine.h"
 
-static const UINT_PTR TIMER_UPDATE_ID = 2001;
+using namespace BareStats;
 
 static void OutputToConsole(const std::string& msg) {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -84,9 +84,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     std::string configPath = ConfigManager::GetDefaultConfigPath();
     AppConfig config = ConfigManager::Load(configPath);
 
-    CpuCollector cpuCollector;
-    MemoryCollector memoryCollector;
-    GpuCollector gpuCollector;
+    TelemetryEngine telemetryEngine(config);
 
     OverlayWindow overlay(config);
     if (!overlay.Initialize(hInstance)) {
@@ -95,35 +93,35 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         return 1;
     }
 
+    // Connect display state change callback to suspend/resume background telemetry polling
+    overlay.SetDisplayStateCallback([&telemetryEngine](bool screenActive) {
+        telemetryEngine.SetSuspended(!screenActive);
+    });
+
+    // Connect telemetry ready callback from worker thread
+    overlay.SetTelemetryCallback([&overlay, &telemetryEngine]() {
+        SystemMetrics metrics = telemetryEngine.GetLatestMetrics();
+        overlay.UpdateMetrics(metrics);
+    });
+
     overlay.Show();
 
-    // Initial query
-    SystemMetrics initialMetrics;
-    initialMetrics.cpu = cpuCollector.Collect();
-    initialMetrics.memory = memoryCollector.Collect();
-    initialMetrics.gpu = gpuCollector.Collect();
+    // Initial query for launch roll-up animation
+    SystemMetrics initialMetrics = telemetryEngine.CollectImmediate();
     overlay.UpdateMetrics(initialMetrics);
     overlay.TriggerLaunchAnimation(initialMetrics);
 
-    // Setup 1-second refresh timer
-    SetTimer(overlay.GetHwnd(), TIMER_UPDATE_ID, config.refreshIntervalMs, nullptr);
+    // Start background telemetry worker thread posting WM_TELEMETRY_UPDATED to overlay window
+    telemetryEngine.Start(overlay.GetHwnd(), OverlayWindow::WM_TELEMETRY_UPDATED);
 
-    // Message Loop
+    // Pure Win32 UI message loop - completely unblocked from hardware polling!
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0)) {
-        if (msg.message == WM_TIMER && msg.wParam == TIMER_UPDATE_ID) {
-            SystemMetrics metrics;
-            if (config.showCpu) metrics.cpu = cpuCollector.Collect();
-            if (config.showRam) metrics.memory = memoryCollector.Collect();
-            if (config.showGpu) metrics.gpu = gpuCollector.Collect();
-            overlay.UpdateMetrics(metrics);
-        } else {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
     }
 
-    KillTimer(overlay.GetHwnd(), TIMER_UPDATE_ID);
+    telemetryEngine.Stop();
     if (hMutex) CloseHandle(hMutex);
     return static_cast<int>(msg.wParam);
 }
