@@ -31,9 +31,14 @@ public:
     void SetDisplayStateCallback(std::function<void(bool /*screenOn*/)> cb) { onDisplayStateChanged_ = std::move(cb); }
     void SetTelemetryCallback(std::function<void()> cb) { onTelemetryReady_ = std::move(cb); }
 
+    void ForceRepaint();
+    bool IsAutoStartEnabled() const;
+    bool SetAutoStart(bool enable);
+
     static const UINT ID_EXIT_MOVE_MODE      = 2004;
     static const UINT WM_TRIGGER_LAUNCH_ANIM = WM_USER + 101;
     static const UINT WM_TELEMETRY_UPDATED   = WM_USER + 102;
+    static UINT s_uTaskbarRestartMsg;
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -80,6 +85,7 @@ private:
     static const UINT ID_TRAY_TOGGLE_MOVE = 2001;
     static const UINT ID_TRAY_RESET_POS   = 2002;
     static const UINT ID_TRAY_EXIT        = 2003;
+    static const UINT ID_TRAY_AUTOSTART   = 2006;
 };
 
 } // namespace BareStats

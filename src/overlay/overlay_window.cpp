@@ -20,18 +20,18 @@ using namespace Gdiplus;
 
 namespace BareStats {
 
+UINT OverlayWindow::s_uTaskbarRestartMsg = 0;
 static HHOOK s_hMouseHook = nullptr;
 static HWINEVENTHOOK s_hWinEventHook = nullptr;
 static OverlayWindow* s_pOverlayInstance = nullptr;
 
-static void CALLBACK WinEventProc(HWINEVENTHOOK, DWORD event, HWND hwnd, LONG, LONG, DWORD, DWORD) {
-    if (event == EVENT_SYSTEM_FOREGROUND && s_pOverlayInstance) {
+static void CALLBACK WinEventProc(HWINEVENTHOOK, DWORD, HWND hwnd, LONG, LONG, DWORD, DWORD) {
+    if (s_pOverlayInstance && !s_pOverlayInstance->IsPositioningMode()) {
         HWND overlayHwnd = s_pOverlayInstance->GetHwnd();
-        if (overlayHwnd && overlayHwnd != hwnd && !s_pOverlayInstance->IsPositioningMode()) {
-            if (GetWindow(overlayHwnd, GW_HWNDPREV) != nullptr) {
-                SetWindowPos(overlayHwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
-            }
+        if (overlayHwnd && overlayHwnd != hwnd) {
+            SetWindowPos(overlayHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            s_pOverlayInstance->ForceRepaint();
         }
     }
 }
@@ -108,6 +108,11 @@ LRESULT CALLBACK OverlayWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 }
 
 LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (s_uTaskbarRestartMsg != 0 && msg == s_uTaskbarRestartMsg) {
+        SetupTrayIcon();
+        return 0;
+    }
+
     switch (msg) {
         case WM_HOTKEY:
             if (wParam == HOTKEY_CTRL_SHIFT_M || wParam == HOTKEY_CTRL_ALT_M || wParam == HOTKEY_CTRL_ALT_P) {
@@ -309,8 +314,8 @@ bool OverlayWindow::Initialize(HINSTANCE hInstance) {
 
     s_pOverlayInstance = this;
 
-    // Track foreground window changes across the system to immediately re-assert HWND_TOPMOST
-    s_hWinEventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+    // Track foreground window changes and shell popup dismiss events to immediately re-assert HWND_TOPMOST
+    s_hWinEventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_CAPTUREEND,
                                       nullptr, WinEventProc, 0, 0,
                                       WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
@@ -323,6 +328,7 @@ bool OverlayWindow::Initialize(HINSTANCE hInstance) {
     RegisterHotKey(hwnd_, HOTKEY_CTRL_ALT_P, MOD_CONTROL | MOD_ALT, 'P');
 
     SetupTrayIcon();
+    s_uTaskbarRestartMsg = RegisterWindowMessageW(L"TaskbarCreated");
 
     hPowerNotify_ = RegisterPowerSettingNotification(hwnd_, &GUID_CONSOLE_DISPLAY_STATE, DEVICE_NOTIFY_WINDOW_HANDLE);
 
@@ -357,6 +363,11 @@ void OverlayWindow::ShowTrayContextMenu() {
     AppendMenuW(hMenu, moveFlags, ID_TRAY_TOGGLE_MOVE, L"Reposition Mode (Ctrl+Shift+M or Ctrl+Alt+M)");
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_RESET_POS, L"Reset to Bottom-Center");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+
+    UINT autoStartFlags = MF_STRING | (IsAutoStartEnabled() ? MF_CHECKED : MF_UNCHECKED);
+    AppendMenuW(hMenu, autoStartFlags, ID_TRAY_AUTOSTART, L"Start with Windows");
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit BareStats");
 
     POINT pt;
@@ -370,9 +381,51 @@ void OverlayWindow::ShowTrayContextMenu() {
         SetPositioningMode(!isPositioningMode_);
     } else if (cmd == ID_TRAY_RESET_POS) {
         ResetToPreset(PositionPreset::BottomCenter);
+    } else if (cmd == ID_TRAY_AUTOSTART) {
+        SetAutoStart(!IsAutoStartEnabled());
     } else if (cmd == ID_TRAY_EXIT) {
         DestroyWindow(hwnd_);
     }
+}
+
+void OverlayWindow::ForceRepaint() {
+    lastRenderedText_.clear();
+    RenderOverlay(lastSegments_);
+}
+
+bool OverlayWindow::IsAutoStartEnabled() const {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        DWORD type = 0;
+        DWORD size = 0;
+        LSTATUS status = RegQueryValueExW(hKey, L"BareStats", nullptr, &type, nullptr, &size);
+        RegCloseKey(hKey);
+        return (status == ERROR_SUCCESS && type == REG_SZ);
+    }
+    return false;
+}
+
+bool OverlayWindow::SetAutoStart(bool enable) {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_WRITE, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+
+    bool success = false;
+    if (enable) {
+        wchar_t exePath[MAX_PATH] = { 0 };
+        if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0) {
+            std::wstring quotedPath = L"\"" + std::wstring(exePath) + L"\"";
+            DWORD bytes = static_cast<DWORD>((quotedPath.length() + 1) * sizeof(wchar_t));
+            success = (RegSetValueExW(hKey, L"BareStats", 0, REG_SZ,
+                                      reinterpret_cast<const BYTE*>(quotedPath.c_str()), bytes) == ERROR_SUCCESS);
+        }
+    } else {
+        success = (RegDeleteValueW(hKey, L"BareStats") == ERROR_SUCCESS);
+    }
+
+    RegCloseKey(hKey);
+    return success;
 }
 
 void OverlayWindow::Show() {

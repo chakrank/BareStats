@@ -70,7 +70,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     }
 
     // Normal GUI Overlay mode
-    HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"BareStats_SingleInstance_Mutex");
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"Local\\BareStats_SingleInstance_Mutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         // Another instance is already active! Wake it up with a launch roll-up flip animation
         HWND existingWnd = FindWindowW(L"BareStatsOverlayClass", nullptr);

@@ -1,4 +1,5 @@
 #include "config.h"
+#include <shlobj.h>
 #include <sstream>
 #include <iomanip>
 #include <vector>
@@ -114,13 +115,43 @@ static bool CreateDefaultConfigFile(const std::string& iniPath, const AppConfig&
 }
 
 std::string ConfigManager::GetDefaultConfigPath() {
-    char exePath[MAX_PATH] = {0};
-    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-    std::string path = exePath;
-    size_t lastSlash = path.find_last_of("\\/");
-    if (lastSlash != std::string::npos) {
-        return path.substr(0, lastSlash + 1) + "config.ini";
+    // 1. Check for Portable Mode (config.ini right next to the executable)
+    char exePath[MAX_PATH] = { 0 };
+    if (GetModuleFileNameA(nullptr, exePath, MAX_PATH) > 0) {
+        std::string path = exePath;
+        size_t lastSlash = path.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            std::string exeDir = path.substr(0, lastSlash + 1);
+            std::string localIni = exeDir + "config.ini";
+
+            // If config.ini exists next to the .exe, test if it is writable
+            DWORD attrib = GetFileAttributesA(localIni.c_str());
+            if (attrib != INVALID_FILE_ATTRIBUTES && !(attrib & FILE_ATTRIBUTE_DIRECTORY)) {
+                HANDLE hFile = CreateFileA(localIni.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (hFile != INVALID_HANDLE_VALUE) {
+                    CloseHandle(hFile);
+                    return localIni; // Portable mode confirmed
+                }
+            } else {
+                // Test if the directory is writable
+                std::string testFile = exeDir + ".__write_test.tmp";
+                HANDLE hTest = CreateFileA(testFile.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+                if (hTest != INVALID_HANDLE_VALUE) {
+                    CloseHandle(hTest);
+                    return localIni; // Portable directory writable
+                }
+            }
+        }
     }
+
+    // 2. Fallback to %LOCALAPPDATA%\BareStats\config.ini (Installed / Protected Mode)
+    char localAppData[MAX_PATH] = { 0 };
+    if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, localAppData))) {
+        std::string appDir = std::string(localAppData) + "\\BareStats";
+        CreateDirectoryA(appDir.c_str(), nullptr);
+        return appDir + "\\config.ini";
+    }
+
     return "config.ini";
 }
 
