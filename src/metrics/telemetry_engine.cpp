@@ -64,6 +64,20 @@ SystemMetrics TelemetryEngine::GetLatestMetrics() {
     return latestMetrics_;
 }
 
+void TelemetryEngine::Recover() {
+    gpuCollector_.Recover();
+    {
+        std::lock_guard<std::mutex> lock(cvMutex_);
+        isSuspendedChanged_ = true;
+        cv_.notify_all();
+    }
+}
+
+void TelemetryEngine::Shutdown() {
+    Stop();
+    gpuCollector_.Shutdown();
+}
+
 void TelemetryEngine::WorkerLoop() {
     // Initial warmup
     std::this_thread::sleep_for(std::chrono::milliseconds(200));

@@ -13,6 +13,8 @@ public:
 
     bool IsAvailable() const { return isAvailable_; }
     bool Collect(GpuMetrics& metrics, uint32_t deviceIndex = 0);
+    bool Recover();
+    void Shutdown();
 
 private:
     HMODULE nvmlDll_ = nullptr;

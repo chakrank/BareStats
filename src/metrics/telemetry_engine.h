@@ -34,6 +34,12 @@ public:
     // Direct synchronous collection (used for initial warm-up / CLI mode)
     SystemMetrics CollectImmediate();
 
+    // Health check / driver reset recovery (TDR / sleep resume)
+    void Recover();
+
+    // Clean shutdown of worker thread and all collectors
+    void Shutdown();
+
 private:
     void WorkerLoop();
 

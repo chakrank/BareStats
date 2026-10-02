@@ -30,6 +30,10 @@ public:
 
     void SetDisplayStateCallback(std::function<void(bool /*screenOn*/)> cb) { onDisplayStateChanged_ = std::move(cb); }
     void SetTelemetryCallback(std::function<void()> cb) { onTelemetryReady_ = std::move(cb); }
+    void SetSystemResumeCallback(std::function<void()> cb) { onSystemResume_ = std::move(cb); }
+    void SetEndSessionCallback(std::function<void()> cb) { onEndSession_ = std::move(cb); }
+
+    UINT GetCurrentDpi() const { return currentDpi_; }
 
     void ForceRepaint();
     bool IsAutoStartEnabled() const;
@@ -59,7 +63,10 @@ private:
 
     std::function<void(bool)> onDisplayStateChanged_;
     std::function<void()> onTelemetryReady_;
+    std::function<void()> onSystemResume_;
+    std::function<void()> onEndSession_;
     std::wstring lastRenderedText_;
+    UINT currentDpi_ = 96;
 
     bool isPositioningMode_ = false;
     bool isAnimatingRollUp_ = false;

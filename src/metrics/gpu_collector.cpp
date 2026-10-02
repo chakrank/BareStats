@@ -74,8 +74,27 @@ bool GpuCollector::TryCollectDxgi(GpuMetrics& metrics, uint32_t deviceIndex) {
     return false;
 }
 
+void GpuCollector::Recover() {
+    retryCount_ = 0;
+    nvmlCollector_.Recover();
+}
+
+void GpuCollector::Shutdown() {
+    nvmlCollector_.Shutdown();
+}
+
 GpuMetrics GpuCollector::Collect(uint32_t deviceIndex) {
     GpuMetrics metrics;
+
+    if (!nvmlCollector_.IsAvailable()) {
+        retryCount_++;
+        if (retryCount_ >= 10) { // Probe NVML re-initialization every ~10s
+            retryCount_ = 0;
+            nvmlCollector_.Recover();
+        }
+    } else {
+        retryCount_ = 0;
+    }
 
     if (nvmlCollector_.IsAvailable()) {
         if (nvmlCollector_.Collect(metrics, deviceIndex)) {

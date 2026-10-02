@@ -98,6 +98,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         telemetryEngine.SetSuspended(!screenActive);
     });
 
+    // Connect system resume callback (sleep / modern standby wake & TDR driver reset recovery)
+    overlay.SetSystemResumeCallback([&telemetryEngine]() {
+        telemetryEngine.Recover();
+    });
+
+    // Connect end session callback (clean Windows shutdown / reboot)
+    overlay.SetEndSessionCallback([&telemetryEngine]() {
+        telemetryEngine.Shutdown();
+    });
+
     // Connect telemetry ready callback from worker thread
     overlay.SetTelemetryCallback([&overlay, &telemetryEngine]() {
         SystemMetrics metrics = telemetryEngine.GetLatestMetrics();
@@ -121,7 +131,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         DispatchMessageW(&msg);
     }
 
-    telemetryEngine.Stop();
+    telemetryEngine.Shutdown();
     if (hMutex) CloseHandle(hMutex);
     return static_cast<int>(msg.wParam);
 }

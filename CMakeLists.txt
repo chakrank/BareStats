@@ -1,11 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
-project(BareStats LANGUAGES CXX)
+project(BareStats VERSION 0.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if (MSVC)
     add_compile_options(/W4 /utf-8 /permissive- /Zc:__cplusplus)
+    add_compile_options("$<$<CONFIG:Release>:/O2;/Oi;/Gy>")
+    add_link_options("$<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>")
 endif()
 
 set(SOURCES
@@ -19,6 +21,8 @@ set(SOURCES
     src/overlay/monitor_helper.cpp
     src/config/config.cpp
     src/util/formatter.cpp
+    resources/resource.rc
+    resources/BareStats.manifest
 )
 
 set(HEADERS

@@ -94,6 +94,15 @@ void NvmlCollector::UnloadNvml() {
     deviceHandle_ = nullptr;
 }
 
+bool NvmlCollector::Recover() {
+    UnloadNvml();
+    return LoadNvml();
+}
+
+void NvmlCollector::Shutdown() {
+    UnloadNvml();
+}
+
 bool NvmlCollector::Collect(GpuMetrics& metrics, uint32_t deviceIndex) {
     if (!isAvailable_ || !fnNvmlDeviceGetHandleByIndex_) {
         return false;
@@ -101,7 +110,12 @@ bool NvmlCollector::Collect(GpuMetrics& metrics, uint32_t deviceIndex) {
 
     if (!deviceHandle_ || activeDeviceIndex_ != deviceIndex) {
         void* handle = nullptr;
-        if (fnNvmlDeviceGetHandleByIndex_(deviceIndex, &handle) != 0 || !handle) {
+        int res = fnNvmlDeviceGetHandleByIndex_(deviceIndex, &handle);
+        if (res != 0 || !handle) {
+            if (res == 1 || res == 9 || res == 15 || res == 16) {
+                // Driver reset, GPU lost, or uninitialized
+                UnloadNvml();
+            }
             return false;
         }
         deviceHandle_ = handle;
@@ -121,8 +135,12 @@ bool NvmlCollector::Collect(GpuMetrics& metrics, uint32_t deviceIndex) {
     // Utilization
     if (fnNvmlDeviceGetUtilizationRates_) {
         NvmlUtilization util{};
-        if (fnNvmlDeviceGetUtilizationRates_(deviceHandle_, &util) == 0) {
+        int res = fnNvmlDeviceGetUtilizationRates_(deviceHandle_, &util);
+        if (res == 0) {
             metrics.utilizationPercent = static_cast<double>(util.gpu);
+        } else if (res == 1 || res == 9 || res == 15 || res == 16) {
+            UnloadNvml();
+            return false;
         }
     }
 

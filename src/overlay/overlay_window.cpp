@@ -4,6 +4,7 @@
 #include "overlay_window.h"
 #include "monitor_helper.h"
 #include "../util/formatter.h"
+#include "../../resources/resource.h"
 #include <windows.h>
 #include <shellapi.h>
 #include <dwmapi.h>
@@ -34,6 +35,17 @@ static void CALLBACK WinEventProc(HWINEVENTHOOK, DWORD, HWND hwnd, LONG, LONG, D
             s_pOverlayInstance->ForceRepaint();
         }
     }
+}
+
+using PFN_GetDpiForWindow = UINT(WINAPI*)(HWND);
+static UINT FetchDpiForWindow(HWND hwnd) {
+    static auto pfn = reinterpret_cast<PFN_GetDpiForWindow>(
+        GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+    if (pfn && hwnd) {
+        UINT dpi = pfn(hwnd);
+        if (dpi > 0) return dpi;
+    }
+    return 96;
 }
 
 static LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -248,8 +260,42 @@ LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                         onDisplayStateChanged_(screenActive);
                     }
                 }
+            } else if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND) {
+                // System waking from sleep / standby: reconnect hardware APIs and re-assert topmost
+                if (onSystemResume_) {
+                    onSystemResume_();
+                }
+                SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                ForceRepaint();
             }
             return TRUE;
+
+        case WM_QUERYENDSESSION:
+            // Agree to OS shutdown immediately (never block shutdown/restart)
+            return TRUE;
+
+        case WM_ENDSESSION:
+            if (wParam == TRUE) {
+                // Session is ending: cleanly persist state and shut down hardware collectors
+                if (onEndSession_) {
+                    onEndSession_();
+                }
+                ConfigManager::Save(ConfigManager::GetDefaultConfigPath(), config_);
+                RemoveTrayIcon();
+            }
+            return 0;
+
+        case WM_DPICHANGED: {
+            currentDpi_ = LOWORD(wParam);
+            auto* lprc = reinterpret_cast<RECT*>(lParam);
+            if (lprc) {
+                windowX_ = lprc->left;
+                windowY_ = lprc->top;
+            }
+            lastRenderedText_.clear();
+            RenderOverlay(lastSegments_);
+            return 0;
+        }
 
         case WM_DISPLAYCHANGE:
         case WM_SETTINGCHANGE: {
@@ -291,6 +337,9 @@ bool OverlayWindow::Initialize(HINSTANCE hInstance) {
     wc.hInstance = hInstance;
     wc.lpszClassName = L"BareStatsOverlayClass";
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
+    wc.hIconSm = reinterpret_cast<HICON>(LoadImageW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+                                                    GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
 
     if (!RegisterClassExW(&wc)) {
         DWORD err = GetLastError();
@@ -311,6 +360,8 @@ bool OverlayWindow::Initialize(HINSTANCE hInstance) {
     if (!hwnd_) {
         return false;
     }
+
+    currentDpi_ = FetchDpiForWindow(hwnd_);
 
     s_pOverlayInstance = this;
 
@@ -342,7 +393,14 @@ void OverlayWindow::SetupTrayIcon() {
     nid_.uID = 1;
     nid_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid_.uCallbackMessage = WM_TRAYICON;
-    nid_.hIcon = LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
+    int smX = GetSystemMetrics(SM_CXSMICON);
+    int smY = GetSystemMetrics(SM_CYSMICON);
+    if (smX <= 0) smX = 16;
+    if (smY <= 0) smY = 16;
+    nid_.hIcon = reinterpret_cast<HICON>(LoadImageW(hInstance_, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, smX, smY, LR_DEFAULTCOLOR));
+    if (!nid_.hIcon) {
+        nid_.hIcon = LoadIconW(hInstance_, MAKEINTRESOURCEW(IDI_APP_ICON));
+    }
     wcscpy_s(nid_.szTip, L"BareStats - Click to Reposition | Right-click for options");
     Shell_NotifyIconW(NIM_ADD, &nid_);
     trayIconActive_ = true;
@@ -614,8 +672,8 @@ void OverlayWindow::UpdateMetrics(const SystemMetrics& metrics) {
     RenderOverlay(lastSegments_);
 }
 
-static void DrawVectorMoveIcon(Graphics& graphics, float cx, float cy, float radius, Color color) {
-    Pen pen(color, 1.5f);
+static void DrawVectorMoveIcon(Graphics& graphics, float cx, float cy, float radius, Color color, float penWidth = 1.5f) {
+    Pen pen(color, penWidth);
     SolidBrush brush(color);
 
     // Cross arms
@@ -654,8 +712,10 @@ static std::wstring ResolveFontFamily(const std::wstring& requestedFont) {
 
 static std::unique_ptr<Font> CreateOverlayFont(const std::wstring& requestedFace,
                                                const std::wstring& requestedWeight,
-                                               int fontSize) {
-    REAL emSize = static_cast<REAL>(fontSize > 0 ? fontSize : 13);
+                                               int fontSize,
+                                               float dpiScale) {
+    REAL baseSize = static_cast<REAL>(fontSize > 0 ? fontSize : 13);
+    REAL emSize = static_cast<REAL>(std::round(baseSize * dpiScale));
     std::wstring effectiveFace = ResolveFontFamily(requestedFace);
 
     bool isBold = (_wcsicmp(requestedWeight.c_str(), L"bold") == 0);
@@ -712,18 +772,21 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
 
     std::wstring headerText = L"MOVE MODE: Drag to reposition \x2022 Click outside or Ctrl+Shift+M to lock";
 
-    // Uniform font matching NVIDIA Overlay (eliminates baseline/height mismatch)
-    auto overlayFont = CreateOverlayFont(config_.fontFace, config_.fontWeight, config_.fontSize);
+    float dpiScale = (currentDpi_ > 0 ? currentDpi_ : 96) / 96.0f;
 
-    auto headerFont = std::make_unique<Font>(L"Segoe UI", 11.0f, FontStyleBold, UnitPixel);
+    // Uniform font matching NVIDIA Overlay (scaled to monitor DPI)
+    auto overlayFont = CreateOverlayFont(config_.fontFace, config_.fontWeight, config_.fontSize, dpiScale);
+
+    float headerFontSize = std::round(11.0f * dpiScale);
+    auto headerFont = std::make_unique<Font>(L"Segoe UI", headerFontSize, FontStyleBold, UnitPixel);
     if (headerFont->GetLastStatus() != Status::Ok) {
-        headerFont = std::make_unique<Font>(L"Consolas", 11.0f, FontStyleBold, UnitPixel);
+        headerFont = std::make_unique<Font>(L"Consolas", headerFontSize, FontStyleBold, UnitPixel);
     }
 
     StringFormat format(StringFormat::GenericTypographic());
     format.SetFormatFlags(format.GetFormatFlags() | StringFormatFlagsMeasureTrailingSpaces | StringFormatFlagsNoWrap);
 
-    RectF layoutRect(0, 0, 4000, 300);
+    RectF layoutRect(0, 0, 4000.0f * dpiScale, 300.0f * dpiScale);
     RectF headerBounds{};
     REAL totalStatsWidth = 0.0f;
     REAL maxStatsHeight = 0.0f;
@@ -748,17 +811,21 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
     int statsWidth = static_cast<int>(std::ceil(totalStatsWidth));
     int statsHeight = static_cast<int>(std::ceil(maxStatsHeight));
 
+    int padX = static_cast<int>(std::round(14.0f * dpiScale));
+    int padY = static_cast<int>(std::round(10.0f * dpiScale));
+
     int contentWidth = 0;
     int contentHeight = 0;
 
     if (isPositioningMode_) {
         int headerTextWidth = static_cast<int>(std::ceil(headerBounds.Width));
-        headerHeight_ = 24;
-        contentWidth = (std::max)(statsWidth + 14, headerTextWidth + 36);
-        contentHeight = headerHeight_ + statsHeight + 10;
+        headerHeight_ = static_cast<int>(std::round(24.0f * dpiScale));
+        int headerExtra = static_cast<int>(std::round(36.0f * dpiScale));
+        contentWidth = (std::max)(statsWidth + padX, headerTextWidth + headerExtra);
+        contentHeight = headerHeight_ + statsHeight + padY;
     } else {
-        contentWidth = statsWidth + 14;
-        contentHeight = statsHeight + 10;
+        contentWidth = statsWidth + padX;
+        contentHeight = statsHeight + padY;
     }
 
     windowWidth_ = contentWidth;
@@ -812,24 +879,26 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
             graphics.DrawLine(&divPen, 1, headerHeight_, contentWidth - 2, headerHeight_);
 
             // 4. Outer bounding box border
-            Pen borderPen(Color(255, 0, 220, 255), 1.5f); // vibrant cyan
+            Pen borderPen(Color(255, 0, 220, 255), 1.5f * dpiScale); // vibrant cyan
             graphics.DrawRectangle(&borderPen, 1, 1, contentWidth - 3, contentHeight - 3);
 
             // 5. Draw vector 4-way move icon in top line
             float iconCy = headerHeight_ / 2.0f;
-            DrawVectorMoveIcon(graphics, 14.0f, iconCy, 5.0f, Color(255, 0, 230, 255));
+            float iconCx = 14.0f * dpiScale;
+            float iconRadius = 5.0f * dpiScale;
+            DrawVectorMoveIcon(graphics, iconCx, iconCy, iconRadius, Color(255, 0, 230, 255), 1.5f * dpiScale);
 
             // 6. Draw header text in top line
             SolidBrush headerTextBrush(Color(255, 255, 215, 0)); // bright gold
+            float headerTx = 24.0f * dpiScale;
             float headerTy = (headerHeight_ - headerBounds.Height) / 2.0f;
-            graphics.DrawString(headerText.c_str(), -1, headerFont.get(), PointF(24.0f, headerTy), &headerTextBrush);
+            graphics.DrawString(headerText.c_str(), -1, headerFont.get(), PointF(headerTx, headerTy), &headerTextBrush);
         }
 
         // Stats text position:
-        // In Normal Mode: text is at X = 6.0f, Y = 5.0f
-        // In Move Mode: text is at X = 6.0f, Y = headerHeight_ + 5.0f
-        REAL statsX = 6.0f;
-        REAL statsY = isPositioningMode_ ? static_cast<REAL>(headerHeight_ + 5) : 5.0f;
+        REAL statsX = std::round(6.0f * dpiScale);
+        REAL statsY = isPositioningMode_ ? static_cast<REAL>(headerHeight_ + std::round(5.0f * dpiScale)) : std::round(5.0f * dpiScale);
+        float shadowOffset = (std::max)(1.0f, std::round(1.0f * dpiScale));
 
         // Base text brush (bright crisp white for numbers and units)
         BYTE rBase = GetRValue(config_.textColor);
@@ -873,7 +942,7 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
 
             // Draw smooth single-offset shadow for contrast
             if (config_.dropShadow) {
-                graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(curX + 1.0f, statsY + 1.0f), &format, &shadowBrush);
+                graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(curX + shadowOffset, statsY + shadowOffset), &format, &shadowBrush);
             }
 
             // Pick color brush by segment type / severity
