@@ -14,7 +14,7 @@
 ```
 
 ### Platform Architecture & Roadmap
-- **Windows (v0.7 Active / v1.0 Target):** Pure Win32 layered window implementation for Windows 10 and Windows 11 (x64), supporting Intel, AMD, ARM64 / Snapdragon, and multi-GPU configurations.
+- **Windows (v0.8 Active / v1.0 Target):** Pure Win32 layered window implementation for Windows 10 and Windows 11 (x64), supporting Intel, AMD, ARM64 / Snapdragon, and multi-GPU configurations.
 - **Linux (Planned):** Standalone Wayland (`wlr-layer-shell`) and X11 overlay utilizing `/proc` and `sysfs` telemetry interfaces.
 - **macOS (Planned):** Native floating menu panel rendered via AppKit and Metal, leveraging Mach kernel and IOKit frameworks.
 
@@ -25,6 +25,8 @@
 - **Minimal Memory Footprint:** Trims runtime working set down to **~3.9 MB** resident memory (WS) in Task Manager.
 - **Decoupled Sampling Pipeline:** Telemetry polling runs on a dedicated background worker thread with conditional sleep; the Win32 UI message pump remains purely event-driven and unblocked.
 - **Sub-Microsecond Dirty-Frame Bypass:** Completely skips GDI+ rasterization and layered window surface updates when telemetry values are unchanged, yielding true **0.00%** CPU usage at idle.
+- **Zero-Restart Live Configuration Hot-Reload:** Background file-watcher using non-blocking `ReadDirectoryChangesW` with 200ms write debouncing. Any changes to fonts, colors, margins, opacity, metric order, or poll rates saved in external editors apply instantly without restarting.
+- **Hardware Opacity & Alpha Blending:** Configurable global window opacity (10% to 100%) composited directly by the Windows Desktop Window Manager (DWM).
 - **Multi-GPU & Hybrid Laptop Battery Guard:** Configurable GPU adapter targeting (`gpu_index`) across discrete and integrated GPUs. Selecting an iGPU (Intel UHD/Iris, AMD Radeon) completely bypasses vendor NVML calls, keeping mobile discrete GPUs in ultra-low-power D3-cold sleep to preserve laptop battery life.
 - **Display Power State Awareness:** Subscribes to display power notifications (`GUID_CONSOLE_DISPLAY_STATE`), suspending polling when monitors enter standby to conserve battery.
 - **Per-Monitor V2 DPI Scaling:** Native vector and typography rendering that dynamically scales across high-DPI displays (125%, 150%, 200%) and heterogeneous multi-monitor setups without bitmap blur.
@@ -48,9 +50,10 @@
 | Action | Control / Hotkey | Description |
 | :--- | :--- | :--- |
 | **Move Mode** | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd> *(or <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>M</kbd>)* | Toggles interactive repositioning mode with a 4-way vector drag box. Click and drag anywhere on the overlay. |
+| **Toggle Visibility** | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> *(or <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>H</kbd>)* | Instantly hides or reveals the overlay window without interrupting background telemetry collection. |
 | **Lock Position** | Left-click outside or re-press hotkey | Anchors position to configuration and restores click-through transparency. |
 | **System Tray** | Left-Click icon | Toggles repositioning mode. |
-| **System Tray** | Right-Click icon | Opens the context menu: Reposition, Reset to Bottom-Center, Start with Windows toggle, and Exit. |
+| **System Tray** | Right-Click icon | Context menu: Reposition, Reset Position, Hide/Show Overlay, Reload Config, Start with Windows, and Exit. |
 
 ---
 
@@ -75,10 +78,13 @@ color_high = #FFD700
 color_critical = #FF4D4D
 enable_dynamic_colors = 1
 drop_shadow = 1
+separator = │
+opacity = 100
 
 [Telemetry]
 refresh_interval_ms = 1000
 gpu_index = 0
+order = CPU, GPU, RAM
 show_cpu = 1
 show_gpu = 1
 show_ram = 1

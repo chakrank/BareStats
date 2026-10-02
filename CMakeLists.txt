@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(BareStats VERSION 0.7.0 LANGUAGES CXX)
+project(BareStats VERSION 0.8.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,7 @@ set(SOURCES
     src/overlay/overlay_window.cpp
     src/overlay/monitor_helper.cpp
     src/config/config.cpp
+    src/config/config_watcher.cpp
     src/util/formatter.cpp
     resources/resource.rc
     resources/BareStats.manifest
@@ -35,6 +36,7 @@ set(HEADERS
     src/overlay/overlay_window.h
     src/overlay/monitor_helper.h
     src/config/config.h
+    src/config/config_watcher.h
     src/util/formatter.h
 )
 

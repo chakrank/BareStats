@@ -19,6 +19,9 @@ public:
     bool Initialize(HINSTANCE hInstance);
     void Show();
     void Hide();
+    void ToggleVisibility();
+    bool IsVisible() const { return isVisible_; }
+    void ApplyConfig(const AppConfig& newConfig);
     void UpdateMetrics(const SystemMetrics& metrics);
     void SetPositioningMode(bool enable);
     bool IsPositioningMode() const { return isPositioningMode_; }
@@ -32,6 +35,7 @@ public:
     void SetTelemetryCallback(std::function<void()> cb) { onTelemetryReady_ = std::move(cb); }
     void SetSystemResumeCallback(std::function<void()> cb) { onSystemResume_ = std::move(cb); }
     void SetEndSessionCallback(std::function<void()> cb) { onEndSession_ = std::move(cb); }
+    void SetConfigReloadCallback(std::function<void()> cb) { onConfigReload_ = std::move(cb); }
 
     UINT GetCurrentDpi() const { return currentDpi_; }
 
@@ -42,6 +46,7 @@ public:
     static const UINT ID_EXIT_MOVE_MODE      = 2004;
     static const UINT WM_TRIGGER_LAUNCH_ANIM = WM_USER + 101;
     static const UINT WM_TELEMETRY_UPDATED   = WM_USER + 102;
+    static const UINT WM_CONFIG_RELOADED     = WM_USER + 103;
     static UINT s_uTaskbarRestartMsg;
 
 private:
@@ -65,9 +70,11 @@ private:
     std::function<void()> onTelemetryReady_;
     std::function<void()> onSystemResume_;
     std::function<void()> onEndSession_;
+    std::function<void()> onConfigReload_;
     std::wstring lastRenderedText_;
     UINT currentDpi_ = 96;
 
+    bool isVisible_ = true;
     bool isPositioningMode_ = false;
     bool isAnimatingRollUp_ = false;
     int animTicksRemaining_ = 0;
@@ -86,13 +93,17 @@ private:
     static const UINT_PTR HOTKEY_CTRL_SHIFT_M = 1001;
     static const UINT_PTR HOTKEY_CTRL_ALT_M   = 1002;
     static const UINT_PTR HOTKEY_CTRL_ALT_P   = 1003;
+    static const UINT_PTR HOTKEY_CTRL_SHIFT_H = 1004;
+    static const UINT_PTR HOTKEY_CTRL_ALT_H   = 1005;
     static const UINT_PTR TIMER_ANIM_ID       = 2005;
 
-    static const UINT WM_TRAYICON = WM_USER + 100;
-    static const UINT ID_TRAY_TOGGLE_MOVE = 2001;
-    static const UINT ID_TRAY_RESET_POS   = 2002;
-    static const UINT ID_TRAY_EXIT        = 2003;
-    static const UINT ID_TRAY_AUTOSTART   = 2006;
+    static const UINT WM_TRAYICON             = WM_USER + 100;
+    static const UINT ID_TRAY_TOGGLE_MOVE     = 2001;
+    static const UINT ID_TRAY_RESET_POS       = 2002;
+    static const UINT ID_TRAY_EXIT            = 2003;
+    static const UINT ID_TRAY_AUTOSTART       = 2006;
+    static const UINT ID_TRAY_TOGGLE_VISIBILITY = 2007;
+    static const UINT ID_TRAY_RELOAD_CONFIG   = 2008;
 };
 
 } // namespace BareStats

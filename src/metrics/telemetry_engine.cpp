@@ -78,6 +78,11 @@ void TelemetryEngine::Shutdown() {
     gpuCollector_.Shutdown();
 }
 
+void TelemetryEngine::Wake() {
+    std::lock_guard<std::mutex> lock(cvMutex_);
+    cv_.notify_all();
+}
+
 void TelemetryEngine::WorkerLoop() {
     // Initial warmup
     std::this_thread::sleep_for(std::chrono::milliseconds(200));

@@ -93,6 +93,8 @@ OverlayWindow::~OverlayWindow() {
         UnregisterHotKey(hwnd_, HOTKEY_CTRL_SHIFT_M);
         UnregisterHotKey(hwnd_, HOTKEY_CTRL_ALT_M);
         UnregisterHotKey(hwnd_, HOTKEY_CTRL_ALT_P);
+        UnregisterHotKey(hwnd_, HOTKEY_CTRL_SHIFT_H);
+        UnregisterHotKey(hwnd_, HOTKEY_CTRL_ALT_H);
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
@@ -129,6 +131,9 @@ LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         case WM_HOTKEY:
             if (wParam == HOTKEY_CTRL_SHIFT_M || wParam == HOTKEY_CTRL_ALT_M || wParam == HOTKEY_CTRL_ALT_P) {
                 SetPositioningMode(!isPositioningMode_);
+                return 0;
+            } else if (wParam == HOTKEY_CTRL_SHIFT_H || wParam == HOTKEY_CTRL_ALT_H) {
+                ToggleVisibility();
                 return 0;
             }
             break;
@@ -167,6 +172,12 @@ LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             if (LOWORD(wParam) == ID_EXIT_MOVE_MODE) {
                 SetPositioningMode(false);
                 return 0;
+            } else if (LOWORD(wParam) == ID_TRAY_TOGGLE_VISIBILITY) {
+                ToggleVisibility();
+                return 0;
+            } else if (LOWORD(wParam) == ID_TRAY_RELOAD_CONFIG) {
+                PostMessageW(hwnd, WM_CONFIG_RELOADED, 0, 0);
+                return 0;
             }
             break;
 
@@ -185,6 +196,16 @@ LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 onTelemetryReady_();
             }
             return 0;
+
+        case WM_CONFIG_RELOADED: {
+            std::string cfgPath = ConfigManager::GetDefaultConfigPath();
+            AppConfig newConfig = ConfigManager::Load(cfgPath);
+            ApplyConfig(newConfig);
+            if (onConfigReload_) {
+                onConfigReload_();
+            }
+            return 0;
+        }
 
         case WM_TRIGGER_LAUNCH_ANIM:
             TriggerLaunchAnimation(lastMetrics_);
@@ -371,12 +392,17 @@ bool OverlayWindow::Initialize(HINSTANCE hInstance) {
                                       WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
     // Register hotkeys with fallbacks
-    // Primary: Ctrl + Shift + M (most reliable across Windows setups)
+    // Primary Reposition: Ctrl + Shift + M (most reliable across Windows setups)
     RegisterHotKey(hwnd_, HOTKEY_CTRL_SHIFT_M, MOD_CONTROL | MOD_SHIFT, 'M');
-    // Secondary: Ctrl + Alt + M
+    // Secondary Reposition: Ctrl + Alt + M
     RegisterHotKey(hwnd_, HOTKEY_CTRL_ALT_M, MOD_CONTROL | MOD_ALT, 'M');
-    // Tertiary: Ctrl + Alt + P
+    // Tertiary Reposition: Ctrl + Alt + P
     RegisterHotKey(hwnd_, HOTKEY_CTRL_ALT_P, MOD_CONTROL | MOD_ALT, 'P');
+
+    // Primary Visibility Toggle: Ctrl + Shift + H
+    RegisterHotKey(hwnd_, HOTKEY_CTRL_SHIFT_H, MOD_CONTROL | MOD_SHIFT, 'H');
+    // Secondary Visibility Toggle: Ctrl + Alt + H
+    RegisterHotKey(hwnd_, HOTKEY_CTRL_ALT_H, MOD_CONTROL | MOD_ALT, 'H');
 
     SetupTrayIcon();
     s_uTaskbarRestartMsg = RegisterWindowMessageW(L"TaskbarCreated");
@@ -422,6 +448,11 @@ void OverlayWindow::ShowTrayContextMenu() {
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_RESET_POS, L"Reset to Bottom-Center");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
+    std::wstring visLabel = isVisible_ ? L"Hide Overlay (Ctrl+Shift+H)" : L"Show Overlay (Ctrl+Shift+H)";
+    AppendMenuW(hMenu, MF_STRING, ID_TRAY_TOGGLE_VISIBILITY, visLabel.c_str());
+    AppendMenuW(hMenu, MF_STRING, ID_TRAY_RELOAD_CONFIG, L"Reload Configuration");
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+
     UINT autoStartFlags = MF_STRING | (IsAutoStartEnabled() ? MF_CHECKED : MF_UNCHECKED);
     AppendMenuW(hMenu, autoStartFlags, ID_TRAY_AUTOSTART, L"Start with Windows");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
@@ -439,6 +470,10 @@ void OverlayWindow::ShowTrayContextMenu() {
         SetPositioningMode(!isPositioningMode_);
     } else if (cmd == ID_TRAY_RESET_POS) {
         ResetToPreset(PositionPreset::BottomCenter);
+    } else if (cmd == ID_TRAY_TOGGLE_VISIBILITY) {
+        ToggleVisibility();
+    } else if (cmd == ID_TRAY_RELOAD_CONFIG) {
+        PostMessageW(hwnd_, WM_CONFIG_RELOADED, 0, 0);
     } else if (cmd == ID_TRAY_AUTOSTART) {
         SetAutoStart(!IsAutoStartEnabled());
     } else if (cmd == ID_TRAY_EXIT) {
@@ -487,14 +522,39 @@ bool OverlayWindow::SetAutoStart(bool enable) {
 }
 
 void OverlayWindow::Show() {
+    isVisible_ = true;
     if (hwnd_) {
         ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
     }
 }
 
 void OverlayWindow::Hide() {
+    isVisible_ = false;
     if (hwnd_) {
         ShowWindow(hwnd_, SW_HIDE);
+    }
+}
+
+void OverlayWindow::ToggleVisibility() {
+    if (isVisible_) {
+        Hide();
+    } else {
+        Show();
+        ForceRepaint();
+    }
+}
+
+void OverlayWindow::ApplyConfig(const AppConfig& newConfig) {
+    config_ = newConfig;
+    if (config_.opacity < 10) config_.opacity = 10;
+    if (config_.opacity > 100) config_.opacity = 100;
+
+    lastRenderedText_.clear();
+    RecalculateWindowPosition(windowWidth_, windowHeight_);
+    SetWindowPos(hwnd_, HWND_TOPMOST, windowX_, windowY_, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+    if (!lastSegments_.empty()) {
+        lastSegments_ = Formatter::FormatSegments(lastMetrics_, &config_);
+        RenderOverlay(lastSegments_);
     }
 }
 
@@ -652,6 +712,7 @@ void OverlayWindow::RecalculateWindowPosition(int contentWidth, int contentHeigh
 void OverlayWindow::UpdateMetrics(const SystemMetrics& metrics) {
     lastMetrics_ = metrics;
     if (isAnimatingRollUp_) return;
+    if (!isVisible_) return;
 
     auto segments = Formatter::FormatSegments(metrics, &config_);
 
@@ -970,7 +1031,8 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
     BLENDFUNCTION blend{};
     blend.BlendOp = AC_SRC_OVER;
     blend.BlendFlags = 0;
-    blend.SourceConstantAlpha = 255;
+    BYTE alpha = static_cast<BYTE>(std::clamp((config_.opacity * 255) / 100, 25, 255));
+    blend.SourceConstantAlpha = alpha;
     blend.AlphaFormat = AC_SRC_ALPHA;
 
     UpdateLayeredWindow(hwnd_, hdcScreen, &ptDst, &wndSize, memDC, &ptSrc, 0, &blend, ULW_ALPHA);

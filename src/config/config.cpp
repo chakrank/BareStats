@@ -3,6 +3,7 @@
 #include <sstream>
 #include <iomanip>
 #include <vector>
+#include <algorithm>
 
 namespace BareStats {
 
@@ -26,6 +27,33 @@ static COLORREF HexToColor(const std::string& hex, COLORREF defaultColor) {
     } catch (...) {
         return defaultColor;
     }
+}
+
+static std::string WideToUtf8(const std::wstring& wstr) {
+    if (wstr.empty()) return "";
+    int len = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1) return "";
+    std::string str(len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &str[0], len, nullptr, nullptr);
+    return str;
+}
+
+static std::wstring Utf8ToWide(const std::string& str) {
+    if (str.empty()) return L"";
+    int len = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
+    if (len <= 1) return L"";
+    std::wstring wstr(len - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &wstr[0], len);
+    return wstr;
+}
+
+static std::string JoinMetricOrder(const std::vector<std::string>& order) {
+    std::ostringstream oss;
+    for (size_t i = 0; i < order.size(); ++i) {
+        if (i > 0) oss << ", ";
+        oss << order[i];
+    }
+    return oss.str();
 }
 
 static bool ReadIniBool(const char* section, const char* key, bool defaultVal, const std::string& iniPath) {
@@ -87,12 +115,18 @@ static bool CreateDefaultConfigFile(const std::string& iniPath, const AppConfig&
         << "color_critical = " << ColorToHex(config.colorCritical) << "\n"
         << "enable_dynamic_colors = " << (config.enableDynamicColors ? "1" : "0") << "\n"
         << "# Subtle dark drop-shadow for contrast over white windows (1 = enabled, 0 = disabled)\n"
-        << "drop_shadow = " << (config.dropShadow ? "1" : "0") << "\n\n"
+        << "drop_shadow = " << (config.dropShadow ? "1" : "0") << "\n"
+        << "# Telemetry category divider symbol (e.g. │, |, •, /, -, ::)\n"
+        << "separator = " << WideToUtf8(config.separator) << "\n"
+        << "# Global overlay window opacity percentage (10 to 100)\n"
+        << "opacity = " << config.opacity << "\n\n"
         << "[Telemetry]\n"
         << "# Update interval in milliseconds\n"
         << "refresh_interval_ms = " << config.refreshIntervalMs << "\n\n"
         << "# Selected GPU device index (0 = primary/discrete GPU, 1 = secondary/integrated GPU)\n"
         << "gpu_index = " << config.gpuIndex << "\n\n"
+        << "# Metric segment display ordering (comma-separated: CPU, GPU, RAM)\n"
+        << "order = " << JoinMetricOrder(config.metricOrder) << "\n\n"
         << "# Toggle specific metrics (1 = show, 0 = hide)\n"
         << "show_cpu = " << (config.showCpu ? "1" : "0") << "\n"
         << "show_gpu = " << (config.showGpu ? "1" : "0") << "\n"
@@ -237,12 +271,62 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
     config.enableDynamicColors = ReadIniBool("Appearance", "enable_dynamic_colors", config.enableDynamicColors, iniPath);
     config.dropShadow = ReadIniBool("Appearance", "drop_shadow", config.dropShadow, iniPath);
 
+    // Separator
+    char sepBuf[64] = {0};
+    GetPrivateProfileStringA("Appearance", "separator", "│", sepBuf, sizeof(sepBuf), iniPath.c_str());
+    std::wstring wsep = Utf8ToWide(sepBuf);
+    if (!wsep.empty()) {
+        config.separator = wsep;
+    }
+
+    // Opacity
+    char opBuf[32] = {0};
+    GetPrivateProfileStringA("Appearance", "opacity", "100", opBuf, sizeof(opBuf), iniPath.c_str());
+    std::string opStr(opBuf);
+    size_t pctPos = opStr.find('%');
+    if (pctPos != std::string::npos) opStr = opStr.substr(0, pctPos);
+    try {
+        double parsed = std::stod(opStr);
+        if (parsed > 0.0 && parsed <= 1.0) {
+            config.opacity = static_cast<int>(std::round(parsed * 100.0));
+        } else {
+            config.opacity = static_cast<int>(std::round(parsed));
+        }
+    } catch (...) {
+        config.opacity = 100;
+    }
+    config.opacity = std::clamp(config.opacity, 10, 100);
+
     // [Telemetry]
     config.refreshIntervalMs = static_cast<uint32_t>(GetPrivateProfileIntA("Telemetry", "refresh_interval_ms", config.refreshIntervalMs, iniPath.c_str()));
     if (config.refreshIntervalMs < 100) config.refreshIntervalMs = 1000;
 
     config.gpuIndex = GetPrivateProfileIntA("Telemetry", "gpu_index", config.gpuIndex, iniPath.c_str());
     if (config.gpuIndex < 0) config.gpuIndex = 0;
+
+    // Metric ordering
+    char orderBuf[128] = {0};
+    GetPrivateProfileStringA("Telemetry", "order", "CPU, GPU, RAM", orderBuf, sizeof(orderBuf), iniPath.c_str());
+    std::string orderStr(orderBuf);
+    std::vector<std::string> parsedOrder;
+    std::stringstream ss(orderStr);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        size_t first = token.find_first_not_of(" \t\r\n");
+        size_t last = token.find_last_not_of(" \t\r\n");
+        if (first != std::string::npos && last != std::string::npos) {
+            std::string trimmed = token.substr(first, last - first + 1);
+            for (char& c : trimmed) c = static_cast<char>(toupper(c));
+            if (trimmed == "CPU" || trimmed == "GPU" || trimmed == "RAM") {
+                if (std::find(parsedOrder.begin(), parsedOrder.end(), trimmed) == parsedOrder.end()) {
+                    parsedOrder.push_back(trimmed);
+                }
+            }
+        }
+    }
+    if (!parsedOrder.empty()) {
+        config.metricOrder = parsedOrder;
+    }
 
     config.showCpu = ReadIniBool("Telemetry", "show_cpu", config.showCpu, iniPath);
     config.showGpu = ReadIniBool("Telemetry", "show_gpu", config.showGpu, iniPath);
@@ -293,9 +377,12 @@ bool ConfigManager::Save(const std::string& iniPath, const AppConfig& config) {
     WritePrivateProfileStringA("Appearance", "color_critical", ColorToHex(config.colorCritical).c_str(), iniPath.c_str());
     WritePrivateProfileStringA("Appearance", "enable_dynamic_colors", config.enableDynamicColors ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Appearance", "drop_shadow", config.dropShadow ? "1" : "0", iniPath.c_str());
+    WritePrivateProfileStringA("Appearance", "separator", WideToUtf8(config.separator).c_str(), iniPath.c_str());
+    WritePrivateProfileStringA("Appearance", "opacity", std::to_string(config.opacity).c_str(), iniPath.c_str());
 
     WritePrivateProfileStringA("Telemetry", "refresh_interval_ms", std::to_string(config.refreshIntervalMs).c_str(), iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "gpu_index", std::to_string(config.gpuIndex).c_str(), iniPath.c_str());
+    WritePrivateProfileStringA("Telemetry", "order", JoinMetricOrder(config.metricOrder).c_str(), iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_cpu", config.showCpu ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_gpu", config.showGpu ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_ram", config.showRam ? "1" : "0", iniPath.c_str());

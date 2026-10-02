@@ -40,6 +40,9 @@ public:
     // Clean shutdown of worker thread and all collectors
     void Shutdown();
 
+    // Wake worker thread immediately to pick up configuration updates
+    void Wake();
+
 private:
     void WorkerLoop();
 

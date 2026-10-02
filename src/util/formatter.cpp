@@ -87,15 +87,23 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
     bool hideOffline = config && config->hideOfflineMetrics;
     bool enableColors = !config || config->enableDynamicColors;
 
+    std::wstring sepStr = (config && !config->separator.empty()) ? config->separator : L"\x2502";
+
     auto applySeverity = [enableColors](MetricSeverity sev) -> MetricSeverity {
         return enableColors ? sev : MetricSeverity::Normal;
     };
 
     bool hasPreviousBlock = false;
 
-    // CPU Block
-    if (showCpu) {
-        segments.push_back({ L"\x2502", MetricSeverity::Normal, SegmentType::Separator, false, true });
+    auto appendSeparator = [&]() {
+        if (hasPreviousBlock) {
+            segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
+        }
+        segments.push_back({ sepStr, MetricSeverity::Normal, SegmentType::Separator, false, true });
+    };
+
+    auto appendCpu = [&]() {
+        appendSeparator();
         segments.push_back({ L" CPU ", MetricSeverity::Normal, SegmentType::Label, false, false });
 
         // CPU Util
@@ -126,14 +134,10 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
         }
 
         hasPreviousBlock = true;
-    }
+    };
 
-    // GPU Block
-    if (showGpu && (!hideOffline || metrics.gpu.isAvailable)) {
-        if (hasPreviousBlock) {
-            segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
-        }
-        segments.push_back({ L"\x2502", MetricSeverity::Normal, SegmentType::Separator, false, true });
+    auto appendGpu = [&]() {
+        appendSeparator();
         segments.push_back({ L" GPU ", MetricSeverity::Normal, SegmentType::Label, false, false });
 
         if (metrics.gpu.isAvailable) {
@@ -205,14 +209,10 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
         }
 
         hasPreviousBlock = true;
-    }
+    };
 
-    // RAM Block
-    if (showRam) {
-        if (hasPreviousBlock) {
-            segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
-        }
-        segments.push_back({ L"\x2502", MetricSeverity::Normal, SegmentType::Separator, false, true });
+    auto appendRam = [&]() {
+        appendSeparator();
         segments.push_back({ L" RAM ", MetricSeverity::Normal, SegmentType::Label, false, false });
 
         if (metrics.memory.totalBytes > 0) {
@@ -224,11 +224,24 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
         }
 
         hasPreviousBlock = true;
+    };
+
+    std::vector<std::string> defaultOrder = { "CPU", "GPU", "RAM" };
+    const std::vector<std::string>& activeOrder = (config && !config->metricOrder.empty()) ? config->metricOrder : defaultOrder;
+
+    for (const auto& item : activeOrder) {
+        if (item == "CPU" && showCpu) {
+            appendCpu();
+        } else if (item == "GPU" && showGpu && (!hideOffline || metrics.gpu.isAvailable)) {
+            appendGpu();
+        } else if (item == "RAM" && showRam) {
+            appendRam();
+        }
     }
 
     if (hasPreviousBlock) {
         segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
-        segments.push_back({ L"\x2502", MetricSeverity::Normal, SegmentType::Separator, false, true });
+        segments.push_back({ sepStr, MetricSeverity::Normal, SegmentType::Separator, false, true });
     }
 
     return segments;

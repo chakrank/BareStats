@@ -3,6 +3,7 @@
 #include "../overlay/monitor_helper.h"
 #include <windows.h>
 #include <string>
+#include <vector>
 
 namespace BareStats {
 
@@ -25,9 +26,12 @@ struct AppConfig {
     COLORREF colorCritical = RGB(255, 77, 77);     // red for critical / near-max
     bool enableDynamicColors = true;
     bool dropShadow = true;
+    int opacity = 100;                             // Global opacity in % (10 to 100, default: 100)
+    std::wstring separator = L"\x2502";            // Telemetry divider symbol (default: │)
 
     uint32_t refreshIntervalMs = 1000;
     int gpuIndex = 0;                  // Target GPU device index (0 = primary/dGPU, 1 = secondary/iGPU)
+    std::vector<std::string> metricOrder = { "CPU", "GPU", "RAM" }; // Metric display ordering
 
     bool showCpu = true;
     bool showGpu = true;

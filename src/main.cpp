@@ -10,6 +10,7 @@
 #include "metrics/gpu_collector.h"
 #include "overlay/overlay_window.h"
 #include "config/config.h"
+#include "config/config_watcher.h"
 #include "util/formatter.h"
 
 #include "metrics/telemetry_engine.h"
@@ -29,12 +30,21 @@ static void OutputToConsole(const std::string& msg) {
     }
 }
 
+static std::string WideToUtf8Str(const std::wstring& wstr) {
+    if (wstr.empty()) return "";
+    int len = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1) return "";
+    std::string str(len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &str[0], len, nullptr, nullptr);
+    return str;
+}
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     std::wstring fullCmd = GetCommandLineW();
 
     // Support --test or --cli for verification
     if (fullCmd.find(L"--test") != std::wstring::npos || fullCmd.find(L"--cli") != std::wstring::npos) {
-        OutputToConsole("\nBareStats CLI Verification (v0.7.0)\n");
+        OutputToConsole("\nBareStats CLI Verification (v0.8.0)\n");
         OutputToConsole("Initializing telemetry collectors...\n");
 
         std::string configPath = ConfigManager::GetDefaultConfigPath();
@@ -55,7 +65,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             OutputToConsole("  [GPU " + std::to_string(g.index) + "] " + g.name + " (" + vendorName + ", " +
                 std::to_string(g.dedicatedVideoMemory / (1024 * 1024)) + "MB VRAM)" + targetTag + "\n");
         }
-        OutputToConsole("\n");
+
+        std::string orderStr;
+        for (size_t o = 0; o < config.metricOrder.size(); ++o) {
+            if (o > 0) orderStr += ", ";
+            orderStr += config.metricOrder[o];
+        }
+        OutputToConsole("Active Settings: Order=[" + orderStr + "], Separator='" +
+            WideToUtf8Str(config.separator) + "', Opacity=" + std::to_string(config.opacity) + "%\n\n");
 
         // Warm up CPU delta
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -127,6 +144,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         overlay.UpdateMetrics(metrics);
     });
 
+    // Connect config reload callback to wake telemetry engine immediately
+    overlay.SetConfigReloadCallback([&telemetryEngine]() {
+        telemetryEngine.Wake();
+    });
+
+    // Start background configuration file watcher for live zero-restart hot reloading
+    ConfigWatcher configWatcher;
+    configWatcher.Start(configPath, [&overlay]() {
+        PostMessageW(overlay.GetHwnd(), OverlayWindow::WM_CONFIG_RELOADED, 0, 0);
+    });
+
     overlay.Show();
 
     // Initial query for launch roll-up animation
@@ -143,6 +171,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+
+    configWatcher.Stop();
 
     telemetryEngine.Shutdown();
     if (hMutex) CloseHandle(hMutex);
