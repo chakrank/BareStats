@@ -27,6 +27,7 @@ struct AppConfig {
     bool dropShadow = true;
 
     uint32_t refreshIntervalMs = 1000;
+    int gpuIndex = 0;                  // Target GPU device index (0 = primary/dGPU, 1 = secondary/iGPU)
 
     bool showCpu = true;
     bool showGpu = true;

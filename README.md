@@ -1,44 +1,45 @@
 # BareStats
 
 > **An ultra-lightweight, zero-overhead native system telemetry overlay.**  
-> *"Don't build another hardware-monitoring suite. Use the operating system's existing telemetry wherever possible, and only query hardware-specific APIs for information the OS does not expose. Small, transparent, private, native, and predictable."*
+> *BareStats is not another hardware-monitoring suite. Rather than bundling background services, kernel drivers, and real-time graphing engines, it relies on the operating system's native telemetry facilities first, querying vendor-specific hardware APIs strictly when necessary. Small, transparent, native, and predictable.*
 
 ---
 
 ## Overview
 
-**BareStats** (TinyMonitor) is a minimalist, privacy-focused native system telemetry overlay engineered to present critical hardware performance metrics as a floating, transparent, always-on-top single-line status bar. It eliminates the heavy footprint, background services, and bloat of traditional monitoring suites while providing real-time visibility into CPU, GPU, and RAM telemetry.
+**BareStats** is a minimalist, privacy-focused native system telemetry overlay engineered to present vital hardware performance metrics as a floating, transparent, always-on-top single-line status bar. It eliminates the overhead, resident memory footprint, and background services typical of traditional monitoring utilities, providing high-fidelity visibility into CPU, GPU, and RAM telemetry with negligible system impact.
 
 ```text
 │ CPU 12% │ GPU 45% 4.2/16GB 52°C 85W 40% │ RAM 12.3/16GB │
 ```
 
-### Platform Support & Roadmap
-- **Windows (v0.6 Active / v1.0 Target):** Native Win32 implementation (Windows 10 / 11 x64).
-- **Linux (Planned):** Native Wayland/X11 overlay with `/proc` and `sysfs` telemetry in the roadmap.
-- **macOS (Planned):** Native floating menu/bar overlay via Metal and IOKit in the roadmap.
+### Platform Architecture & Roadmap
+- **Windows (v0.7 Active / v1.0 Target):** Pure Win32 layered window implementation for Windows 10 and Windows 11 (x64), supporting Intel, AMD, ARM64 / Snapdragon, and multi-GPU configurations.
+- **Linux (Planned):** Standalone Wayland (`wlr-layer-shell`) and X11 overlay utilizing `/proc` and `sysfs` telemetry interfaces.
+- **macOS (Planned):** Native floating menu panel rendered via AppKit and Metal, leveraging Mach kernel and IOKit frameworks.
 
 ---
 
-## Key Highlights
+## Technical Highlights
 
-- **Near-Zero Memory Footprint:** Trims resident memory down to **~3.9 MB** working set (WS).
-- **Decoupled Telemetry Worker Architecture:** Hardware polling runs on a dedicated background worker thread with conditional sleep; the UI rendering loop runs purely event-driven and unblocked.
-- **15-Nanosecond Dirty-Frame Detection:** Completely skips rasterization and layered window updates when metrics are identical, dropping idle overhead to true **0.00%**.
-- **Display Sleep / Screen-Off Suspension:** Monitors display power states and automatically suspends telemetry sampling when screens sleep or enter headless mode to prevent battery drain.
-- **Per-Monitor High-DPI Scaling:** Crystal-clear vector graphics and typography scaling across high-DPI displays (125%, 150%, 200%) and multi-monitor setups.
+- **Minimal Memory Footprint:** Trims runtime working set down to **~3.9 MB** resident memory (WS) in Task Manager.
+- **Decoupled Sampling Pipeline:** Telemetry polling runs on a dedicated background worker thread with conditional sleep; the Win32 UI message pump remains purely event-driven and unblocked.
+- **Sub-Microsecond Dirty-Frame Bypass:** Completely skips GDI+ rasterization and layered window surface updates when telemetry values are unchanged, yielding true **0.00%** CPU usage at idle.
+- **Multi-GPU & Hybrid Laptop Battery Guard:** Configurable GPU adapter targeting (`gpu_index`) across discrete and integrated GPUs. Selecting an iGPU (Intel UHD/Iris, AMD Radeon) completely bypasses vendor NVML calls, keeping mobile discrete GPUs in ultra-low-power D3-cold sleep to preserve laptop battery life.
+- **Display Power State Awareness:** Subscribes to display power notifications (`GUID_CONSOLE_DISPLAY_STATE`), suspending polling when monitors enter standby to conserve battery.
+- **Per-Monitor V2 DPI Scaling:** Native vector and typography rendering that dynamically scales across high-DPI displays (125%, 150%, 200%) and heterogeneous multi-monitor setups without bitmap blur.
 - **Hardware Driver Resilience:**
-  - Auto-reconnects hardware telemetry upon system resume from sleep/standby.
-  - Gracefully recovers from GPU driver resets (TDR) with fallback bridging until the driver recovers.
-- **Graceful OS Shutdown:** Clean lifecycle hooks ensure the application never delays or blocks system restarts or shutdowns.
-- **Branded & Shell Integrated:**
-  - Embedded multi-resolution hardware telemetry icon (`.ico`) in application manager and system tray.
-  - "Start with System" autostart toggle.
-  - Shell crash recovery (auto-restores tray icon if the desktop shell restarts).
-  - Zero-latency pop-down recovery when system flyouts dismiss.
-- **Portable & Multi-User Ready:**
-  - Portable mode: loads from the local application directory if writable.
-  - Multi-user / installed mode: seamlessly stores configuration in user app data when deployed to system directories.
+  - Auto-reconnects hardware telemetry on system resume from sleep (`PBT_APMRESUMEAUTOMATIC`).
+  - Seamlessly bridges GPU driver crashes or resets (TDR) via DXGI until vendor APIs recover.
+- **Clean OS Shutdown Integration:** Intercepts `WM_QUERYENDSESSION` and `WM_ENDSESSION` to guarantee the process never delays, blocks, or halts system reboots.
+- **Desktop Shell Integration:**
+  - Embedded multi-resolution semiconductor telemetry icon in Windows Explorer and the notification tray.
+  - Non-elevated "Start with Windows" registry toggle.
+  - Automatic notification tray recovery on Explorer restarts (`TaskbarCreated`).
+  - Immediate topmost re-assertion when Windows shell popups (Start Menu, Action Center) dismiss.
+- **Portable & Multi-User Configuration:**
+  - Portable mode: loads from the application directory when writable.
+  - Installed mode: automatically falls back to `%LOCALAPPDATA%\BareStats\config.ini` in write-restricted environments.
 
 ---
 
@@ -46,16 +47,16 @@
 
 | Action | Control / Hotkey | Description |
 | :--- | :--- | :--- |
-| **Move Mode** | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd> *(or <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>M</kbd>)* | Activates interactive drag box with 4-way vector move handle. Click and drag anywhere on the overlay. |
-| **Lock Position** | Left-click outside or toggle hotkey | Saves position to config and restores click-through transparency. |
-| **System Tray** | Left-Click icon | Toggles Move Mode on/off. |
-| **System Tray** | Right-Click icon | Opens context menu: Reposition, Reset to Bottom-Center, Start with Windows toggle, and Exit. |
+| **Move Mode** | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd> *(or <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>M</kbd>)* | Toggles interactive repositioning mode with a 4-way vector drag box. Click and drag anywhere on the overlay. |
+| **Lock Position** | Left-click outside or re-press hotkey | Anchors position to configuration and restores click-through transparency. |
+| **System Tray** | Left-Click icon | Toggles repositioning mode. |
+| **System Tray** | Right-Click icon | Opens the context menu: Reposition, Reset to Bottom-Center, Start with Windows toggle, and Exit. |
 
 ---
 
 ## Configuration Reference
 
-BareStats automatically generates a `config.ini` file if none exists. Example configuration:
+BareStats automatically provisions a default `config.ini` on first run if none is present:
 
 ```ini
 [Position]
@@ -77,6 +78,7 @@ drop_shadow = 1
 
 [Telemetry]
 refresh_interval_ms = 1000
+gpu_index = 0
 show_cpu = 1
 show_gpu = 1
 show_ram = 1
@@ -87,11 +89,11 @@ show_max_memory = 1
 hide_offline_metrics = 0
 ```
 
-Refer to [`config.example.ini`](config.example.ini) for full documentation of every option.
+Consult [`config.example.ini`](config.example.ini) for full documentation of each configuration directive.
 
 ---
 
-## Building from Source (Windows v0.6)
+## Building from Source
 
 ### Prerequisites
 - Windows 10 or Windows 11 (x64)
@@ -107,10 +109,10 @@ cmake -B build -S . -G "Ninja" -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
-The resulting `BareStats.exe` is a single standalone executable (~163 KB) with zero third-party runtime dependencies.
+The build produces a single standalone executable (`BareStats.exe`, ~163 KB) with zero external runtime dependencies.
 
-### Command-Line Verification
-Run in command prompt to test telemetry collectors and exit:
+### Verification Suite
+Execute from the command prompt to verify collector pipelines and exit:
 ```cmd
 BareStats.exe --test
 ```
@@ -119,4 +121,4 @@ BareStats.exe --test
 
 ## License
 
-BareStats is released under the [MIT License](LICENSE).
+BareStats is licensed under the [MIT License](LICENSE).

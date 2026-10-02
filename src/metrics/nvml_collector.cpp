@@ -92,6 +92,7 @@ void NvmlCollector::UnloadNvml() {
     }
     isAvailable_ = false;
     deviceHandle_ = nullptr;
+    activeDeviceIndex_ = 0xFFFFFFFF;
 }
 
 bool NvmlCollector::Recover() {

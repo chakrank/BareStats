@@ -51,7 +51,7 @@ static bool ReadIniBool(const char* section, const char* key, bool defaultVal, c
 
 static bool CreateDefaultConfigFile(const std::string& iniPath, const AppConfig& config) {
     std::ostringstream oss;
-    oss << "# BareStats (TinyMonitor) Configuration\n\n"
+    oss << "# BareStats Configuration\n\n"
         << "[Position]\n"
         << "# Selected monitor index (0 is primary)\n"
         << "monitor_index = " << config.monitorIndex << "\n\n"
@@ -91,6 +91,8 @@ static bool CreateDefaultConfigFile(const std::string& iniPath, const AppConfig&
         << "[Telemetry]\n"
         << "# Update interval in milliseconds\n"
         << "refresh_interval_ms = " << config.refreshIntervalMs << "\n\n"
+        << "# Selected GPU device index (0 = primary/discrete GPU, 1 = secondary/integrated GPU)\n"
+        << "gpu_index = " << config.gpuIndex << "\n\n"
         << "# Toggle specific metrics (1 = show, 0 = hide)\n"
         << "show_cpu = " << (config.showCpu ? "1" : "0") << "\n"
         << "show_gpu = " << (config.showGpu ? "1" : "0") << "\n"
@@ -239,6 +241,9 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
     config.refreshIntervalMs = static_cast<uint32_t>(GetPrivateProfileIntA("Telemetry", "refresh_interval_ms", config.refreshIntervalMs, iniPath.c_str()));
     if (config.refreshIntervalMs < 100) config.refreshIntervalMs = 1000;
 
+    config.gpuIndex = GetPrivateProfileIntA("Telemetry", "gpu_index", config.gpuIndex, iniPath.c_str());
+    if (config.gpuIndex < 0) config.gpuIndex = 0;
+
     config.showCpu = ReadIniBool("Telemetry", "show_cpu", config.showCpu, iniPath);
     config.showGpu = ReadIniBool("Telemetry", "show_gpu", config.showGpu, iniPath);
     config.showRam = ReadIniBool("Telemetry", "show_ram", config.showRam, iniPath);
@@ -290,6 +295,7 @@ bool ConfigManager::Save(const std::string& iniPath, const AppConfig& config) {
     WritePrivateProfileStringA("Appearance", "drop_shadow", config.dropShadow ? "1" : "0", iniPath.c_str());
 
     WritePrivateProfileStringA("Telemetry", "refresh_interval_ms", std::to_string(config.refreshIntervalMs).c_str(), iniPath.c_str());
+    WritePrivateProfileStringA("Telemetry", "gpu_index", std::to_string(config.gpuIndex).c_str(), iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_cpu", config.showCpu ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_gpu", config.showGpu ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_ram", config.showRam ? "1" : "0", iniPath.c_str());

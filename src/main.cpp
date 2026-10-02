@@ -34,7 +34,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     // Support --test or --cli for verification
     if (fullCmd.find(L"--test") != std::wstring::npos || fullCmd.find(L"--cli") != std::wstring::npos) {
-        OutputToConsole("\nBareStats (TinyMonitor) CLI Verification\n");
+        OutputToConsole("\nBareStats CLI Verification (v0.7.0)\n");
         OutputToConsole("Initializing telemetry collectors...\n");
 
         std::string configPath = ConfigManager::GetDefaultConfigPath();
@@ -44,6 +44,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         MemoryCollector memoryCollector;
         GpuCollector gpuCollector;
 
+        auto gpus = gpuCollector.GetAvailableGpus();
+        OutputToConsole("Discovered " + std::to_string(gpus.size()) + " hardware GPU adapter(s):\n");
+        for (const auto& g : gpus) {
+            std::string vendorName = (g.vendorId == 0x10DE) ? "NVIDIA" :
+                                     (g.vendorId == 0x8086) ? "Intel" :
+                                     (g.vendorId == 0x1002) ? "AMD" :
+                                     (g.vendorId == 0x5143) ? "Qualcomm" : "Generic";
+            std::string targetTag = (static_cast<int>(g.index) == config.gpuIndex) ? " [Active Target]" : "";
+            OutputToConsole("  [GPU " + std::to_string(g.index) + "] " + g.name + " (" + vendorName + ", " +
+                std::to_string(g.dedicatedVideoMemory / (1024 * 1024)) + "MB VRAM)" + targetTag + "\n");
+        }
+        OutputToConsole("\n");
+
         // Warm up CPU delta
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
@@ -52,7 +65,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             SystemMetrics metrics;
             metrics.cpu = cpuCollector.Collect();
             metrics.memory = memoryCollector.Collect();
-            metrics.gpu = gpuCollector.Collect();
+            metrics.gpu = gpuCollector.Collect(config.gpuIndex);
 
             std::string line = "[" + std::to_string(i + 1) + "/3] " + Formatter::FormatUtf8(metrics, &config) + "\n";
             OutputToConsole(line);

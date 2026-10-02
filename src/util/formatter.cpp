@@ -14,6 +14,12 @@ static MetricSeverity GetSeverity(double percent, double highThresh = 80.0, doub
 }
 
 std::wstring Formatter::FormatBytesGb(uint64_t usedBytes, uint64_t totalBytes) {
+    if (totalBytes < 1024ULL * 1024 * 1024 && totalBytes > 0) {
+        uint32_t usedMb = static_cast<uint32_t>(usedBytes / (1024 * 1024));
+        uint32_t totalMb = static_cast<uint32_t>(totalBytes / (1024 * 1024));
+        return std::to_wstring(usedMb) + L"/" + std::to_wstring(totalMb) + L"MB";
+    }
+
     double usedGb = static_cast<double>(usedBytes) / (1024.0 * 1024.0 * 1024.0);
     double totalGb = static_cast<double>(totalBytes) / (1024.0 * 1024.0 * 1024.0);
 
@@ -22,7 +28,7 @@ std::wstring Formatter::FormatBytesGb(uint64_t usedBytes, uint64_t totalBytes) {
     
     // Check if total is integer-like (e.g. 16, 24, 32, 64)
     double rounded = std::round(totalGb);
-    if (std::abs(totalGb - rounded) < 0.15) {
+    if (totalGb >= 1.0 && std::abs(totalGb - rounded) < 0.15) {
         oss << static_cast<uint32_t>(rounded) << L"GB";
     } else {
         oss << std::fixed << std::setprecision(1) << totalGb << L"GB";
@@ -32,6 +38,19 @@ std::wstring Formatter::FormatBytesGb(uint64_t usedBytes, uint64_t totalBytes) {
 }
 
 static void AppendMemorySegments(std::vector<FormattedSegment>& segments, uint64_t usedBytes, uint64_t totalBytes, MetricSeverity sev, bool showMax = true) {
+    if (totalBytes < 1024ULL * 1024 * 1024 && totalBytes > 0) {
+        uint32_t usedMb = static_cast<uint32_t>(std::round(static_cast<double>(usedBytes) / (1024.0 * 1024.0)));
+        segments.push_back({ std::to_wstring(usedMb), sev, SegmentType::Number, true, false });
+
+        if (showMax) {
+            segments.push_back({ L"/", sev, SegmentType::Unit, false, false });
+            uint32_t totalMb = static_cast<uint32_t>(std::round(static_cast<double>(totalBytes) / (1024.0 * 1024.0)));
+            segments.push_back({ std::to_wstring(totalMb), sev, SegmentType::Number, true, false });
+        }
+        segments.push_back({ L"MB", sev, SegmentType::Unit, false, false });
+        return;
+    }
+
     double usedGb = static_cast<double>(usedBytes) / (1024.0 * 1024.0 * 1024.0);
 
     std::wostringstream ossUsed;
@@ -44,7 +63,7 @@ static void AppendMemorySegments(std::vector<FormattedSegment>& segments, uint64
 
         std::wostringstream ossTotal;
         double rounded = std::round(totalGb);
-        if (std::abs(totalGb - rounded) < 0.15) {
+        if (totalGb >= 1.0 && std::abs(totalGb - rounded) < 0.15) {
             ossTotal << static_cast<uint32_t>(rounded);
         } else {
             ossTotal << std::fixed << std::setprecision(1) << totalGb;

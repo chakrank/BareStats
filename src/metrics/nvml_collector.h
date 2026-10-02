@@ -20,7 +20,7 @@ private:
     HMODULE nvmlDll_ = nullptr;
     bool isAvailable_ = false;
     void* deviceHandle_ = nullptr;
-    uint32_t activeDeviceIndex_ = 0;
+    uint32_t activeDeviceIndex_ = 0xFFFFFFFF;
 
     // Function pointer types
     typedef int (*nvmlInit_t)();
