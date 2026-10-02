@@ -44,7 +44,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     // Support --test or --cli for verification
     if (fullCmd.find(L"--test") != std::wstring::npos || fullCmd.find(L"--cli") != std::wstring::npos) {
-        OutputToConsole("\nBareStats CLI Verification (v0.8.0)\n");
+        OutputToConsole("\nBareStats CLI Verification (v0.9.0)\n");
         OutputToConsole("Initializing telemetry collectors...\n");
 
         std::string configPath = ConfigManager::GetDefaultConfigPath();
@@ -53,6 +53,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         CpuCollector cpuCollector;
         MemoryCollector memoryCollector;
         GpuCollector gpuCollector;
+        NetworkCollector networkCollector;
 
         auto gpus = gpuCollector.GetAvailableGpus();
         OutputToConsole("Discovered " + std::to_string(gpus.size()) + " hardware GPU adapter(s):\n");
@@ -74,7 +75,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         OutputToConsole("Active Settings: Order=[" + orderStr + "], Separator='" +
             WideToUtf8Str(config.separator) + "', Opacity=" + std::to_string(config.opacity) + "%\n\n");
 
-        // Warm up CPU delta
+        // Warm up delta baselines
+        cpuCollector.Collect();
+        networkCollector.Collect();
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
         for (int i = 0; i < 3; ++i) {
@@ -83,15 +86,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             metrics.cpu = cpuCollector.Collect();
             metrics.memory = memoryCollector.Collect();
             metrics.gpu = gpuCollector.Collect(config.gpuIndex);
+            metrics.network = networkCollector.Collect();
 
             std::string line = "[" + std::to_string(i + 1) + "/3] " + Formatter::FormatUtf8(metrics, &config) + "\n";
             OutputToConsole(line);
 
-            if (i == 0 && metrics.gpu.isAvailable) {
-                std::string gpuInfo = "  [GPU Details] Name: " + metrics.gpu.name + 
-                    " | TDP Limit: " + (metrics.gpu.powerLimitWatts.has_value() ? std::to_string(*metrics.gpu.powerLimitWatts) + "W" : "N/A") +
-                    " | Slowdown Temp: " + (metrics.gpu.tempSlowdownLimitC.has_value() ? std::to_string(*metrics.gpu.tempSlowdownLimitC) + "C" : "N/A") + "\n";
-                OutputToConsole(gpuInfo);
+            if (i == 0) {
+                if (metrics.gpu.isAvailable) {
+                    std::string gpuInfo = "  [GPU Details] Name: " + metrics.gpu.name + 
+                        " | TDP Limit: " + (metrics.gpu.powerLimitWatts.has_value() ? std::to_string(*metrics.gpu.powerLimitWatts) + "W" : "N/A") +
+                        " | Slowdown Temp: " + (metrics.gpu.tempSlowdownLimitC.has_value() ? std::to_string(*metrics.gpu.tempSlowdownLimitC) + "C" : "N/A") + "\n";
+                    OutputToConsole(gpuInfo);
+                }
+                if (metrics.network.isAvailable) {
+                    std::string netInfo = "  [Network Details] Primary Adapter: " + WideToUtf8Str(metrics.network.primaryAdapter) + "\n";
+                    OutputToConsole(netInfo);
+                }
             }
         }
 

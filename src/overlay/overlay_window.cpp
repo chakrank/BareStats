@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <dwmapi.h>
+#include <unknwn.h>
 #include <gdiplus.h>
 #include <algorithm>
 #include <cmath>

@@ -4,6 +4,7 @@
 #include "cpu_collector.h"
 #include "memory_collector.h"
 #include "gpu_collector.h"
+#include "network_collector.h"
 #include "../config/config.h"
 #include <windows.h>
 #include <thread>
@@ -50,6 +51,7 @@ private:
     CpuCollector cpuCollector_;
     MemoryCollector memoryCollector_;
     GpuCollector gpuCollector_;
+    NetworkCollector netCollector_;
 
     HWND notifyHwnd_ = nullptr;
     UINT notifyMsg_ = 0;

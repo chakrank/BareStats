@@ -131,6 +131,7 @@ static bool CreateDefaultConfigFile(const std::string& iniPath, const AppConfig&
         << "show_cpu = " << (config.showCpu ? "1" : "0") << "\n"
         << "show_gpu = " << (config.showGpu ? "1" : "0") << "\n"
         << "show_ram = " << (config.showRam ? "1" : "0") << "\n"
+        << "show_net = " << (config.showNet ? "1" : "0") << "\n"
         << "show_gpu_temp = " << (config.showGpuTemp ? "1" : "0") << "\n"
         << "show_gpu_power = " << (config.showGpuPower ? "1" : "0") << "\n"
         << "show_gpu_fan = " << (config.showGpuFan ? "1" : "0") << "\n"
@@ -306,7 +307,7 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
 
     // Metric ordering
     char orderBuf[128] = {0};
-    GetPrivateProfileStringA("Telemetry", "order", "CPU, GPU, RAM", orderBuf, sizeof(orderBuf), iniPath.c_str());
+    GetPrivateProfileStringA("Telemetry", "order", "CPU, GPU, RAM, NET", orderBuf, sizeof(orderBuf), iniPath.c_str());
     std::string orderStr(orderBuf);
     std::vector<std::string> parsedOrder;
     std::stringstream ss(orderStr);
@@ -317,7 +318,7 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
         if (first != std::string::npos && last != std::string::npos) {
             std::string trimmed = token.substr(first, last - first + 1);
             for (char& c : trimmed) c = static_cast<char>(toupper(c));
-            if (trimmed == "CPU" || trimmed == "GPU" || trimmed == "RAM") {
+            if (trimmed == "CPU" || trimmed == "GPU" || trimmed == "RAM" || trimmed == "NET") {
                 if (std::find(parsedOrder.begin(), parsedOrder.end(), trimmed) == parsedOrder.end()) {
                     parsedOrder.push_back(trimmed);
                 }
@@ -331,6 +332,7 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
     config.showCpu = ReadIniBool("Telemetry", "show_cpu", config.showCpu, iniPath);
     config.showGpu = ReadIniBool("Telemetry", "show_gpu", config.showGpu, iniPath);
     config.showRam = ReadIniBool("Telemetry", "show_ram", config.showRam, iniPath);
+    config.showNet = ReadIniBool("Telemetry", "show_net", config.showNet, iniPath);
     config.showGpuTemp = ReadIniBool("Telemetry", "show_gpu_temp", config.showGpuTemp, iniPath);
     config.showGpuPower = ReadIniBool("Telemetry", "show_gpu_power", config.showGpuPower, iniPath);
     config.showGpuFan = ReadIniBool("Telemetry", "show_gpu_fan", config.showGpuFan, iniPath);
@@ -386,6 +388,7 @@ bool ConfigManager::Save(const std::string& iniPath, const AppConfig& config) {
     WritePrivateProfileStringA("Telemetry", "show_cpu", config.showCpu ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_gpu", config.showGpu ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_ram", config.showRam ? "1" : "0", iniPath.c_str());
+    WritePrivateProfileStringA("Telemetry", "show_net", config.showNet ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_gpu_temp", config.showGpuTemp ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_gpu_power", config.showGpuPower ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_gpu_fan", config.showGpuFan ? "1" : "0", iniPath.c_str());

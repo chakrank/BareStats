@@ -32,10 +32,20 @@ struct MemoryMetrics {
     uint64_t totalBytes = 0;
 };
 
+struct NetworkMetrics {
+    bool isAvailable = false;
+    uint64_t rxBytesPerSec = 0;   // Inbound / download throughput
+    uint64_t txBytesPerSec = 0;   // Outbound / upload throughput
+    uint64_t totalRxBytes = 0;    // Lifetime received bytes
+    uint64_t totalTxBytes = 0;    // Lifetime transmitted bytes
+    std::wstring primaryAdapter;  // Primary active physical gateway adapter name
+};
+
 struct SystemMetrics {
     CpuMetrics cpu;
     GpuMetrics gpu;
     MemoryMetrics memory;
+    NetworkMetrics network;
 };
 
 } // namespace BareStats

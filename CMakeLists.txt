@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(BareStats VERSION 0.8.0 LANGUAGES CXX)
+project(BareStats VERSION 0.9.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX)
 
 if (MSVC)
     add_compile_options(/W4 /utf-8 /permissive- /Zc:__cplusplus)
@@ -16,6 +18,7 @@ set(SOURCES
     src/metrics/memory_collector.cpp
     src/metrics/nvml_collector.cpp
     src/metrics/gpu_collector.cpp
+    src/metrics/network_collector.cpp
     src/metrics/telemetry_engine.cpp
     src/overlay/overlay_window.cpp
     src/overlay/monitor_helper.cpp
@@ -32,6 +35,7 @@ set(HEADERS
     src/metrics/memory_collector.h
     src/metrics/nvml_collector.h
     src/metrics/gpu_collector.h
+    src/metrics/network_collector.h
     src/metrics/telemetry_engine.h
     src/overlay/overlay_window.h
     src/overlay/monitor_helper.h
@@ -50,6 +54,8 @@ target_link_libraries(BareStats PRIVATE
     shell32
     dwmapi
     powrprof
+    iphlpapi
+    ws2_32
 )
 
 # Copy config.example.ini to build output

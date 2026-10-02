@@ -37,6 +37,7 @@ public:
 
 private:
     static std::wstring FormatBytesGb(uint64_t usedBytes, uint64_t totalBytes);
+    static std::wstring FormatNetworkRate(uint64_t bytesPerSec);
 };
 
 } // namespace BareStats

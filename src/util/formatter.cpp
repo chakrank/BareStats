@@ -37,6 +37,33 @@ std::wstring Formatter::FormatBytesGb(uint64_t usedBytes, uint64_t totalBytes) {
     return oss.str();
 }
 
+std::wstring Formatter::FormatNetworkRate(uint64_t bytesPerSec) {
+    double bytes = static_cast<double>(bytesPerSec);
+    std::wostringstream oss;
+    oss << std::fixed;
+    if (bytes < 1024.0) {
+        oss << std::setprecision(0) << bytes << L"B";
+    } else if (bytes < 1024.0 * 1024.0) {
+        double kb = bytes / 1024.0;
+        if (kb >= 100.0) {
+            oss << std::setprecision(0) << kb << L"K";
+        } else {
+            oss << std::setprecision(1) << kb << L"K";
+        }
+    } else if (bytes < 1024.0 * 1024.0 * 1024.0) {
+        double mb = bytes / (1024.0 * 1024.0);
+        if (mb >= 100.0) {
+            oss << std::setprecision(0) << mb << L"M";
+        } else {
+            oss << std::setprecision(1) << mb << L"M";
+        }
+    } else {
+        double gb = bytes / (1024.0 * 1024.0 * 1024.0);
+        oss << std::setprecision(1) << gb << L"G";
+    }
+    return oss.str();
+}
+
 static void AppendMemorySegments(std::vector<FormattedSegment>& segments, uint64_t usedBytes, uint64_t totalBytes, MetricSeverity sev, bool showMax = true) {
     if (totalBytes < 1024ULL * 1024 * 1024 && totalBytes > 0) {
         uint32_t usedMb = static_cast<uint32_t>(std::round(static_cast<double>(usedBytes) / (1024.0 * 1024.0)));
@@ -80,6 +107,7 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
     bool showCpu = !config || config->showCpu;
     bool showGpu = !config || config->showGpu;
     bool showRam = !config || config->showRam;
+    bool showNet = config && config->showNet;
     bool showGpuTemp = !config || config->showGpuTemp;
     bool showGpuPower = !config || config->showGpuPower;
     bool showGpuFan = !config || config->showGpuFan;
@@ -226,9 +254,31 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
         hasPreviousBlock = true;
     };
 
-    std::vector<std::string> defaultOrder = { "CPU", "GPU", "RAM" };
+    auto appendNet = [&]() {
+        appendSeparator();
+        segments.push_back({ L" NET ", MetricSeverity::Normal, SegmentType::Label, false, false });
+
+        if (metrics.network.isAvailable) {
+            std::wstring rxStr = FormatNetworkRate(metrics.network.rxBytesPerSec);
+            segments.push_back({ rxStr, MetricSeverity::Normal, SegmentType::Number, true, false });
+            segments.push_back({ L"\x2193", MetricSeverity::Normal, SegmentType::Unit, false, false }); // ↓
+
+            segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
+
+            std::wstring txStr = FormatNetworkRate(metrics.network.txBytesPerSec);
+            segments.push_back({ txStr, MetricSeverity::Normal, SegmentType::Number, true, false });
+            segments.push_back({ L"\x2191", MetricSeverity::Normal, SegmentType::Unit, false, false }); // ↑
+        } else {
+            segments.push_back({ L"N/A", MetricSeverity::Normal, SegmentType::Unit, true, false });
+        }
+
+        hasPreviousBlock = true;
+    };
+
+    std::vector<std::string> defaultOrder = { "CPU", "GPU", "RAM", "NET" };
     const std::vector<std::string>& activeOrder = (config && !config->metricOrder.empty()) ? config->metricOrder : defaultOrder;
 
+    bool netRendered = false;
     for (const auto& item : activeOrder) {
         if (item == "CPU" && showCpu) {
             appendCpu();
@@ -236,7 +286,14 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
             appendGpu();
         } else if (item == "RAM" && showRam) {
             appendRam();
+        } else if (item == "NET" && showNet && (!hideOffline || metrics.network.isAvailable)) {
+            appendNet();
+            netRendered = true;
         }
+    }
+
+    if (showNet && !netRendered && (!hideOffline || metrics.network.isAvailable)) {
+        appendNet();
     }
 
     if (hasPreviousBlock) {

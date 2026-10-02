@@ -31,11 +31,12 @@ struct AppConfig {
 
     uint32_t refreshIntervalMs = 1000;
     int gpuIndex = 0;                  // Target GPU device index (0 = primary/dGPU, 1 = secondary/iGPU)
-    std::vector<std::string> metricOrder = { "CPU", "GPU", "RAM" }; // Metric display ordering
+    std::vector<std::string> metricOrder = { "CPU", "GPU", "RAM", "NET" }; // Metric display ordering
 
     bool showCpu = true;
     bool showGpu = true;
     bool showRam = true;
+    bool showNet = false;              // Network throughput toggle (default: false)
     bool showGpuTemp = true;
     bool showGpuPower = true;
     bool showGpuFan = true;
