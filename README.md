@@ -3,27 +3,35 @@
 > **An ultra-lightweight, zero-overhead native system telemetry overlay for Windows.**
 
 [![CI Matrix](https://github.com/chakrank/BareStats/actions/workflows/ci.yml/badge.svg)](https://github.com/chakrank/BareStats/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/Release-v1.0.0--rc1%20Pre--Release-blue.svg)](https://github.com/chakrank/BareStats/releases)
+[![Release](https://img.shields.io/badge/Release-v1.0.0-blue.svg)](https://github.com/chakrank/BareStats/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-![BareStats Taskbar Overlay Preview](docs/images/bare_stats_preview.png)
+---
 
 ```text
 │ CPU 12% │ GPU 45% 4.2/16GB 52°C 85W 40% │ RAM 12.3/16GB │ NET 1.2M↓ 0.4M↑ │
 ```
 
-| Metric Segment | Metric Name | Description & Behavior |
-| :--- | :--- | :--- |
-| `CPU 12%` | Processor Utilization | Aggregate compute load across all physical and logical cores |
-| `GPU 45%` | GPU Core Compute | Active graphics engine utilization |
-| `4.2/16GB` | Dedicated VRAM | Allocated video memory vs. total capacity (auto-scales to MB for iGPUs) |
-| `52°C` | GPU Temperature | Silicon core temperature with dynamic thermal threshold coloring |
-| `85W` | Board Power Draw | Real-time graphics package wattage relative to rated TDP limit |
-| `40%` | Fan Speed | Active cooling fan speed percentage (or RPM where reported) |
-| `RAM 12.3/16GB` | System Memory | Physical RAM in use vs. installed capacity (toggleable to used-only) |
-| `NET 1.2M↓ 0.4M↑` | Network Throughput | Real-time physical gateway throughput (Download ↓ / Upload ↑) |
+| Metric Segment    | Metric Name           | Description & Behavior                                                  |
+| :---------------- | :-------------------- | :---------------------------------------------------------------------- |
+| `CPU 12%`         | Processor Utilization | Aggregate compute load across all physical and logical cores            |
+| `GPU 45%`         | GPU Core Compute      | Active graphics engine utilization                                      |
+| `4.2/16GB`        | Dedicated VRAM        | Allocated video memory vs. total capacity (auto-scales to MB for iGPUs) |
+| `52°C`            | GPU Temperature       | Silicon core temperature with dynamic thermal threshold coloring        |
+| `85W`             | Board Power Draw      | Real-time graphics package wattage relative to rated TDP limit          |
+| `40%`             | Fan Speed             | Active cooling fan speed percentage (or RPM where reported)             |
+| `RAM 12.3/16GB`   | System Memory         | Physical RAM in use vs. installed capacity (toggleable to used-only)    |
+| `NET 1.2M↓ 0.4M↑` | Network Throughput    | Real-time physical gateway throughput (Download ↓ / Upload ↑)           |
 
-*Note: Every metric segment can be independently toggled, reordered (`order = CPU, GPU, RAM, NET`), or styled with custom separators (`separator = │`) in `config.ini`.*
+_Note: Every metric segment can be independently toggled, reordered (`order = CPU, GPU, RAM, NET`), or styled with custom separators (`separator = │`) in `config.ini`._
+
+### Live Desktop Taskbar Preview
+
+**Normal / Idle State:**
+![BareStats Taskbar Overlay - Idle Baseline](resources/images/bare_stats_preview_idle.png)
+
+**High Workload & Dynamic Thermal Alerts:**
+![BareStats Taskbar Overlay - Active Workload Alerts](resources/images/bare_stats_preview_load.png)
 
 ---
 
@@ -42,10 +50,12 @@ The result is a persistent, transparent single-line status bar delivering live C
 ## Quick Start
 
 ### Runtime System Requirements (End Users)
-* **Operating System:** Windows 10 or Windows 11 (64-bit: x64 or ARM64 / Snapdragon).
-* **Dependencies:** **None.** Single standalone executable (`BareStats.exe`). No installer, no .NET runtime, no Python, and no Visual C++ Redistributable package required.
+
+- **Operating System:** Windows 10 or Windows 11 (64-bit: x64 or ARM64 / Snapdragon).
+- **Dependencies:** **None.** Single standalone executable (`BareStats.exe`). No installer, no .NET runtime, no Python, and no Visual C++ Redistributable package required.
 
 ### Getting Started
+
 1. **Download:** Grab the latest `BareStats.exe` from [Releases](https://github.com/chakrank/BareStats/releases).
 2. **Launch:** Run `BareStats.exe`. The overlay automatically anchors above your taskbar on your primary display.
 3. **Reposition:** Press `Ctrl + Shift + M` (or `Ctrl + Alt + M`) to enter Move Mode. Click and drag the overlay to any position across any connected monitor, then click outside to lock.
@@ -94,28 +104,28 @@ flowchart TD
 
 ## Design Principles & Value Matrix
 
-| Dimension | Conventional Monitoring Suites | BareStats Architecture |
-| :--- | :--- | :--- |
-| **User Privileges** | Demands UAC Administrator rights on launch | Operates entirely in unprivileged user mode |
-| **Driver Footprint** | Installs third-party ring-0 kernel drivers (`.sys`) | Zero kernel drivers; zero vulnerability surface |
-| **Anti-Cheat Safety** | Injects DLLs and hooks into DirectX/Vulkan pipelines | Top-level click-through desktop overlay (`WS_EX_TRANSPARENT`) |
-| **Memory Footprint** | 80 MB – 250 MB resident working set | ~4.5 MB resident working set |
-| **Background Overhead**| Background services, daemons, updater processes | Single standalone process; terminates cleanly on exit |
-| **Battery Impact** | Polls dGPUs constantly, draining mobile laptop batteries | Optimus battery guard respects D3-cold sleep when targeting iGPUs |
-| **Configuration** | Bulky GUI menus requiring restarts | Non-blocking live hot-reload with write debouncing |
+| Dimension               | Conventional Monitoring Suites                           | BareStats Architecture                                            |
+| :---------------------- | :------------------------------------------------------- | :---------------------------------------------------------------- |
+| **User Privileges**     | Demands UAC Administrator rights on launch               | Operates entirely in unprivileged user mode                       |
+| **Driver Footprint**    | Installs third-party ring-0 kernel drivers (`.sys`)      | Zero kernel drivers; zero vulnerability surface                   |
+| **Anti-Cheat Safety**   | Injects DLLs and hooks into DirectX/Vulkan pipelines     | Top-level click-through desktop overlay (`WS_EX_TRANSPARENT`)     |
+| **Memory Footprint**    | 80 MB – 250 MB resident working set                      | ~4.5 MB resident working set                                      |
+| **Background Overhead** | Background services, daemons, updater processes          | Single standalone process; terminates cleanly on exit             |
+| **Battery Impact**      | Polls dGPUs constantly, draining mobile laptop batteries | Optimus battery guard respects D3-cold sleep when targeting iGPUs |
+| **Configuration**       | Bulky GUI menus requiring restarts                       | Non-blocking live hot-reload with write debouncing                |
 
 ---
 
 ## Hardware & Architecture Support Matrix
 
-| Hardware Component | Supported Technologies | Implementation Mechanism |
-| :--- | :--- | :--- |
-| **Processors (CPU)** | Intel Core (P/E hybrid), AMD Ryzen, Qualcomm Snapdragon X Elite (ARM64) | Multi-core kernel time slicing across all physical and logical cores |
-| **System Memory (RAM)** | DDR4, DDR5, LPDDR5, Unified Memory | Direct operating system physical memory allocation mapping |
-| **Discrete Graphics (dGPU)** | NVIDIA GeForce, RTX, Quadro, Tesla | Dynamic vendor driver linking with automatic graphics infrastructure fallback |
-| **Integrated Graphics (iGPU)** | Intel UHD / Iris Xe / Arc, AMD Radeon Graphics | Universal hardware graphics infrastructure |
-| **Network Interfaces (NET)** | Gigabit Ethernet, 2.5GbE/10GbE, Wi-Fi 6/6E/7 | Physical interface evaluation with virtual, WSL, bridge, and VPN filtering |
-| **Multi-GPU Systems** | Selectable primary or secondary GPU target | Configurable `gpu_index` targeting with mobile laptop battery guard |
+| Hardware Component             | Supported Technologies                                                  | Implementation Mechanism                                                      |
+| :----------------------------- | :---------------------------------------------------------------------- | :---------------------------------------------------------------------------- |
+| **Processors (CPU)**           | Intel Core (P/E hybrid), AMD Ryzen, Qualcomm Snapdragon X Elite (ARM64) | Multi-core kernel time slicing across all physical and logical cores          |
+| **System Memory (RAM)**        | DDR4, DDR5, LPDDR5, Unified Memory                                      | Direct operating system physical memory allocation mapping                    |
+| **Discrete Graphics (dGPU)**   | NVIDIA GeForce, RTX, Quadro, Tesla                                      | Dynamic vendor driver linking with automatic graphics infrastructure fallback |
+| **Integrated Graphics (iGPU)** | Intel UHD / Iris Xe / Arc, AMD Radeon Graphics                          | Universal hardware graphics infrastructure                                    |
+| **Network Interfaces (NET)**   | Gigabit Ethernet, 2.5GbE/10GbE, Wi-Fi 6/6E/7                            | Physical interface evaluation with virtual, WSL, bridge, and VPN filtering    |
+| **Multi-GPU Systems**          | Selectable primary or secondary GPU target                              | Configurable `gpu_index` targeting with mobile laptop battery guard           |
 
 ---
 
@@ -123,12 +133,12 @@ flowchart TD
 
 The following performance benchmarks reflect active execution traces on Windows 11 x64 systems:
 
-| Performance Dimension | Observed Metric | Operational Impact |
-| :--- | :--- | :--- |
-| **Resident Working Set** | ~4.5 MB in Task Manager | Minimal memory allocation; zero dynamic bloat over time |
-| **Sampling Execution Cycle** | ~8.2 ms per 1,000 ms tick | Active CPU duty cycle under 0.85%; sleeps 99.15% of the time |
-| **Static State Rendering** | 0.00% CPU duty cycle | Completely bypasses rasterization when telemetry data is unchanged |
-| **Standalone Binary Size** | ~208 KB | Single executable with embedded icons and Per-Monitor V2 manifest |
+| Performance Dimension        | Observed Metric           | Operational Impact                                                 |
+| :--------------------------- | :------------------------ | :----------------------------------------------------------------- |
+| **Resident Working Set**     | ~4.5 MB in Task Manager   | Minimal memory allocation; zero dynamic bloat over time            |
+| **Sampling Execution Cycle** | ~8.2 ms per 1,000 ms tick | Active CPU duty cycle under 0.85%; sleeps 99.15% of the time       |
+| **Static State Rendering**   | 0.00% CPU duty cycle      | Completely bypasses rasterization when telemetry data is unchanged |
+| **Standalone Binary Size**   | ~208 KB                   | Single executable with embedded icons and Per-Monitor V2 manifest  |
 
 ---
 
@@ -141,18 +151,19 @@ BareStats is engineered to guarantee full compatibility and zero ban risk alongs
 - **Zero API Hooking:** BareStats does not hook game swapchains or intercept graphics presentation APIs (unlike traditional OSD injectors).
 - **Zero Foreign Process Inspection:** BareStats never opens foreign process descriptors with `PROCESS_VM_READ` or scans running task memory.
 - **Pure Top-Level Desktop Layer:** Rendered as an independent Win32 top-level layered window (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST`). Operating system input passes directly to underlying fullscreen borderless applications without interception.
+- **Zero Remote Data Collection (100% Offline):** BareStats is strictly a local hardware sampler. It establishes zero outbound network sockets, bundles zero telemetry or analytics SDKs, and never transmits usage metrics, hardware IDs, or system information to remote servers. All telemetry remains in local user-mode memory.
 
 ---
 
 ## Controls & Hotkeys
 
-| Action | Control / Hotkey | Description |
-| :--- | :--- | :--- |
-| **Move Mode** | `Ctrl + Shift + M` *(or `Ctrl + Alt + M`)* | Toggles interactive repositioning mode with an obsidian drag bounding box. Click and drag the overlay anywhere across any monitor. |
-| **Toggle Visibility** | `Ctrl + Shift + H` *(or `Ctrl + Alt + H`)* | Instantly hides or reveals the overlay window without stopping the background telemetry engine. |
-| **Lock Position** | Left-click outside or re-press hotkey | Anchors coordinates to configuration and restores click-through transparency. |
-| **System Tray** | Left-Click icon | Toggles repositioning mode. |
-| **System Tray** | Right-Click icon | Context menu: Reposition, Reset Position, Hide/Show Overlay, Reload Config, Start with Windows, and Exit. |
+| Action                | Control / Hotkey                           | Description                                                                                                                        |
+| :-------------------- | :----------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------- |
+| **Move Mode**         | `Ctrl + Shift + M` _(or `Ctrl + Alt + M`)_ | Toggles interactive repositioning mode with an obsidian drag bounding box. Click and drag the overlay anywhere across any monitor. |
+| **Toggle Visibility** | `Ctrl + Shift + H` _(or `Ctrl + Alt + H`)_ | Instantly hides or reveals the overlay window without stopping the background telemetry engine.                                    |
+| **Lock Position**     | Left-click outside or re-press hotkey      | Anchors coordinates to configuration and restores click-through transparency.                                                      |
+| **System Tray**       | Left-Click icon                            | Toggles repositioning mode.                                                                                                        |
+| **System Tray**       | Right-Click icon                           | Context menu: Reposition, Reset Position, Hide/Show Overlay, Reload Config, Start with Windows, and Exit.                          |
 
 ---
 
@@ -228,22 +239,24 @@ Consult [`config.example.ini`](config.example.ini) for full documentation of eve
 
 ## Troubleshooting Guide
 
-* **Overlay Temporarily Hidden Behind Start Menu:** Windows Desktop Window Manager (DWM) assigns absolute top-level rendering priority to the Start Menu, Action Center, and system flyouts. If the overlay appears hidden behind the Start menu or shell layer, click anywhere on the desktop or active window to dismiss the flyout, and BareStats will immediately re-assert its topmost position.
-* **Hotkey Registration Conflicts:** If another running background utility has already claimed `Ctrl + Shift + M` or `Ctrl + Shift + H`, BareStats automatically attempts registration against its secondary fallback hotkeys (`Ctrl + Alt + M` and `Ctrl + Alt + H`).
-* **Overlay Hidden or Off-Screen:** Right-click the BareStats system tray icon and select **Reset Position to Default**. This restores the window to the bottom-center preset on your primary monitor.
-* **White Wallpaper Readability:** If text is difficult to read over bright backgrounds, ensure `drop_shadow = 1` is enabled in `[Appearance]`, or set a subtle background opacity via `opacity = 90`.
+- **Overlay Temporarily Hidden Behind Start Menu:** Windows Desktop Window Manager (DWM) assigns absolute top-level rendering priority to the Start Menu, Action Center, and system flyouts. If the overlay appears hidden behind the Start menu or shell layer, click anywhere on the desktop or active window to dismiss the flyout, and BareStats will immediately re-assert its topmost position.
+- **Hotkey Registration Conflicts:** If another running background utility has already claimed `Ctrl + Shift + M` or `Ctrl + Shift + H`, BareStats automatically attempts registration against its secondary fallback hotkeys (`Ctrl + Alt + M` and `Ctrl + Alt + H`).
+- **Overlay Hidden or Off-Screen:** Right-click the BareStats system tray icon and select **Reset Position to Default**. This restores the window to the bottom-center preset on your primary monitor.
+- **White Wallpaper Readability:** If text is difficult to read over bright backgrounds, ensure `drop_shadow = 1` is enabled in `[Appearance]`, or set a subtle background opacity via `opacity = 90`.
 
 ---
 
 ## Building from Source
 
 ### Build Prerequisites (Developers & Contributors Only)
-* Windows 10 or Windows 11 (x64)
-* Microsoft Visual Studio 2022+ (with C++ Desktop Development workload)
-* CMake 3.20 or newer
-* Ninja build system
+
+- Windows 10 or Windows 11 (x64)
+- Microsoft Visual Studio 2022+ (with C++ Desktop Development workload)
+- CMake 3.20 or newer
+- Ninja build system
 
 ### Local Compilation
+
 ```cmd
 # Configure release build with Ninja generator
 cmake -B build -S . -G "Ninja" -DCMAKE_BUILD_TYPE=Release
@@ -255,7 +268,9 @@ cmake --build build --config Release
 The build produces a single standalone executable (`build/BareStats.exe`, ~208 KB) with embedded multi-resolution icon resources and Per-Monitor V2 DPI manifests.
 
 ### Automated Diagnostics Suite
+
 Execute from the command prompt to run the internal hardware probe and timing suite:
+
 ```cmd
 build\BareStats.exe --test
 ```
@@ -266,8 +281,8 @@ build\BareStats.exe --test
 
 BareStats incorporates a multi-runner GitHub Actions matrix (`.github/workflows/ci.yml`) validating compilation, linking, and telemetry execution across clean Microsoft Windows environments:
 
-* `windows-latest` (Windows Server 2025 / Windows 11 runner image)
-* `windows-2022` (Windows Server 2022 runner image)
+- `windows-latest` (Windows Server 2025 / Windows 11 runner image)
+- `windows-2022` (Windows Server 2022 runner image)
 
 Every automated CI run executes the comprehensive diagnostic benchmark suite before packaging release artifacts.
 
@@ -277,10 +292,10 @@ Every automated CI run executes the comprehensive diagnostic benchmark suite bef
 
 While v1.0 is targeted strictly at delivering a production-grade Windows implementation, future major revisions are planned around native multi-platform interfaces and expanded accelerator hardware:
 
-* **v1.1 (Deep Windows Hardware Extensions):** Native AMD ADL SDK integration (`atiadlxx.dll`) and Intel IGCL (`ControlLib.dll`) for fan speed, temperature, and power profiling on non-NVIDIA silicon; simultaneous side-by-side multi-GPU monitoring.
-* **v1.2 (Linux Native Port):** Wayland overlay protocol (`wlr-layer-shell`) and X11 (`XComposite`) interfaces backed by `/proc` and `sysfs` telemetry ingestion.
-* **v1.3 (macOS Native Port):** Menu bar status widget implemented in AppKit and Metal, leveraging Mach kernel APIs and Apple Silicon IOKit accelerators.
-* **v1.4 (Specialized AI & Domestic Accelerators on Linux):** Dedicated telemetry connectors for Linux enterprise accelerator stacks, including Moore Threads (MUSA SDK), Huawei Ascend (CANN toolkit), Biren Technology (BI-SDK), and emerging accelerator drivers.
+- **v1.1 (Deep Windows Hardware Extensions):** Native AMD ADL SDK integration (`atiadlxx.dll`) and Intel IGCL (`ControlLib.dll`) for fan speed, temperature, and power profiling on non-NVIDIA silicon; simultaneous side-by-side multi-GPU monitoring.
+- **v1.2 (Linux Native Port):** Wayland overlay protocol (`wlr-layer-shell`) and X11 (`XComposite`) interfaces backed by `/proc` and `sysfs` telemetry ingestion.
+- **v1.3 (macOS Native Port):** Menu bar status widget implemented in AppKit and Metal, leveraging Mach kernel APIs and Apple Silicon IOKit accelerators.
+- **v1.4 (Specialized AI & Domestic Accelerators on Linux):** Dedicated telemetry connectors for Linux enterprise accelerator stacks, including Moore Threads (MUSA SDK), Huawei Ascend (CANN toolkit), Biren Technology (BI-SDK), and emerging accelerator drivers.
 
 ---
 

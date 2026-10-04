@@ -1,0 +1,27 @@
+# Auto-detect text files and normalize line endings to LF in Git
+* text=auto eol=lf
+
+# C++ and build sources
+*.cpp text
+*.h text
+*.rc text
+*.manifest text
+*.ini text
+*.md text
+*.yml text
+*.yaml text
+*.cmake text
+CMakeLists.txt text
+LICENSE text
+
+# Python scripts
+*.py text
+
+# Binary assets
+*.png binary
+*.ico binary
+*.exe binary
+*.lib binary
+*.dll binary
+*.obj binary
+*.res binary

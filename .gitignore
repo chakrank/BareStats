@@ -67,3 +67,8 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Local development and scratch files
+scratch/
+.gemini/
+plan.md

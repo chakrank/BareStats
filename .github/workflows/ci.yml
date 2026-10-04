@@ -12,6 +12,7 @@ jobs:
   build-and-verify:
     name: Build & Verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -40,10 +41,19 @@ jobs:
         run: |
           build\BareStats.exe --test
 
-      - name: Upload Release Executable
+      - name: Generate SHA-256 Checksum
+        shell: powershell
+        run: |
+          $hash = (Get-FileHash -Path build/BareStats.exe -Algorithm SHA256).Hash
+          Write-Output "BareStats.exe SHA-256: $hash"
+          "$hash  BareStats.exe" | Out-File -FilePath build/BareStats.exe.sha256 -Encoding ascii
+
+      - name: Upload Release Artifacts
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
           name: BareStats-Windows-x64
-          path: build/BareStats.exe
+          path: |
+            build/BareStats.exe
+            build/BareStats.exe.sha256
           if-no-files-found: error

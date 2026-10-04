@@ -1,0 +1,42 @@
+name: Feature Request
+description: Suggest an idea or enhancement for BareStats
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature suggestions are welcome! Please make sure your request aligns with BareStats' core principles (Zero Kernel Drivers, Zero Process Injection, Zero External Dependencies, and minimal footprint).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Motivation
+      description: Is your feature request related to a problem or a specific hardware setup? Please describe.
+      placeholder: "I have a dual-GPU setup and would like to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: A clear and concise description of what you would like to see happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: A description of any alternative solutions or features you've considered.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Add any other context, screenshots, or API documentation references here.
+    validations:
+      required: false
