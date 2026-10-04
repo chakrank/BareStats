@@ -1,0 +1,49 @@
+name: CI - Build & Verification Matrix
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-verify:
+    name: Build & Verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ windows-latest, windows-2022 ]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC Developer Environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup Ninja Build System
+        uses: ashutoshvarma/setup-ninja@master
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -S . -G "Ninja" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compile Release Binary
+        run: |
+          cmake --build build --config Release
+
+      - name: Execute Automated Verification & Benchmarks
+        shell: cmd
+        run: |
+          build\BareStats.exe --test
+
+      - name: Upload Release Executable
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: BareStats-Windows-x64
+          path: build/BareStats.exe
+          if-no-files-found: error

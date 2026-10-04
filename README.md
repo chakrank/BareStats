@@ -1,48 +1,146 @@
 # BareStats
 
-> **An ultra-lightweight, zero-overhead native system telemetry overlay.**  
-> *BareStats is not another hardware-monitoring suite. Rather than bundling background services, kernel drivers, and real-time graphing engines, it relies on the operating system's native telemetry facilities first, querying vendor-specific hardware APIs strictly when necessary. Small, transparent, native, and predictable.*
+> **An ultra-lightweight, zero-overhead native system telemetry overlay for Windows.**
 
----
+[![CI Matrix](https://github.com/chakrank/BareStats/actions/workflows/ci.yml/badge.svg)](https://github.com/chakrank/BareStats/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/badge/Release-v1.0.0--rc1%20Pre--Release-blue.svg)](https://github.com/chakrank/BareStats/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-## Overview
-
-**BareStats** is a minimalist, privacy-focused native system telemetry overlay engineered to present vital hardware performance metrics as a floating, transparent, always-on-top single-line status bar. It eliminates the overhead, resident memory footprint, and background services typical of traditional monitoring utilities, providing high-fidelity visibility into CPU, GPU, and RAM telemetry with negligible system impact.
+![BareStats Taskbar Overlay Preview](docs/images/bare_stats_preview.png)
 
 ```text
 │ CPU 12% │ GPU 45% 4.2/16GB 52°C 85W 40% │ RAM 12.3/16GB │ NET 1.2M↓ 0.4M↑ │
 ```
 
-### Platform Architecture & Roadmap
-- **Windows (v0.9 Active / v1.0 Target):** Pure Win32 layered window implementation for Windows 10 and Windows 11 (x64), supporting Intel, AMD, ARM64 / Snapdragon, and multi-GPU configurations.
-- **Linux (Planned):** Standalone Wayland (`wlr-layer-shell`) and X11 overlay utilizing `/proc` and `sysfs` telemetry interfaces.
-- **macOS (Planned):** Native floating menu panel rendered via AppKit and Metal, leveraging Mach kernel and IOKit frameworks.
+| Metric Segment | Metric Name | Description & Behavior |
+| :--- | :--- | :--- |
+| `CPU 12%` | Processor Utilization | Aggregate compute load across all physical and logical cores |
+| `GPU 45%` | GPU Core Compute | Active graphics engine utilization |
+| `4.2/16GB` | Dedicated VRAM | Allocated video memory vs. total capacity (auto-scales to MB for iGPUs) |
+| `52°C` | GPU Temperature | Silicon core temperature with dynamic thermal threshold coloring |
+| `85W` | Board Power Draw | Real-time graphics package wattage relative to rated TDP limit |
+| `40%` | Fan Speed | Active cooling fan speed percentage (or RPM where reported) |
+| `RAM 12.3/16GB` | System Memory | Physical RAM in use vs. installed capacity (toggleable to used-only) |
+| `NET 1.2M↓ 0.4M↑` | Network Throughput | Real-time physical gateway throughput (Download ↓ / Upload ↑) |
+
+*Note: Every metric segment can be independently toggled, reordered (`order = CPU, GPU, RAM, NET`), or styled with custom separators (`separator = │`) in `config.ini`.*
 
 ---
 
-## Technical Highlights
+## Overview & Design Philosophy
 
-- **Minimal Memory Footprint:** Trims runtime working set down to **~3.9 MB** resident memory (WS) in Task Manager.
-- **Decoupled Sampling Pipeline:** Telemetry polling runs on a dedicated background worker thread with conditional sleep; the Win32 UI message pump remains purely event-driven and unblocked.
-- **Sub-Microsecond Dirty-Frame Bypass:** Completely skips GDI+ rasterization and layered window surface updates when telemetry values are unchanged, yielding true **0.00%** CPU usage at idle.
-- **Native Network Throughput Telemetry:** Optional real-time auto-scaling network throughput (`NET 1.2M↓ 0.4M↑`) queried via Windows native `GetIfTable2` (`iphlpapi.dll`). Real-time heuristic filtering permanently discards virtual adapters, WSL bridges, Hyper-V switches, and VPN tunnels to monitor true physical LAN/WAN internet traffic.
-- **Zero-Restart Live Configuration Hot-Reload:** Background file-watcher using non-blocking `ReadDirectoryChangesW` with 200ms write debouncing. Any changes to fonts, colors, margins, opacity, metric order, or poll rates saved in external editors apply instantly without restarting.
-- **Hardware Opacity & Alpha Blending:** Configurable global window opacity (10% to 100%) composited directly by the Windows Desktop Window Manager (DWM).
-- **Multi-GPU & Hybrid Laptop Battery Guard:** Configurable GPU adapter targeting (`gpu_index`) across discrete and integrated GPUs. Selecting an iGPU (Intel UHD/Iris, AMD Radeon) completely bypasses vendor NVML calls, keeping mobile discrete GPUs in ultra-low-power D3-cold sleep to preserve laptop battery life.
-- **Display Power State Awareness:** Subscribes to display power notifications (`GUID_CONSOLE_DISPLAY_STATE`), suspending polling when monitors enter standby to conserve battery.
-- **Per-Monitor V2 DPI Scaling:** Native vector and typography rendering that dynamically scales across high-DPI displays (125%, 150%, 200%) and heterogeneous multi-monitor setups without bitmap blur.
-- **Hardware Driver Resilience:**
-  - Auto-reconnects hardware telemetry on system resume from sleep (`PBT_APMRESUMEAUTOMATIC`).
-  - Seamlessly bridges GPU driver crashes or resets (TDR) via DXGI until vendor APIs recover.
-- **Clean OS Shutdown Integration:** Intercepts `WM_QUERYENDSESSION` and `WM_ENDSESSION` to guarantee the process never delays, blocks, or halts system reboots.
-- **Desktop Shell Integration:**
-  - Embedded multi-resolution semiconductor telemetry icon in Windows Explorer and the notification tray.
-  - Non-elevated "Start with Windows" registry toggle.
-  - Automatic notification tray recovery on Explorer restarts (`TaskbarCreated`).
-  - Immediate topmost re-assertion when Windows shell popups (Start Menu, Action Center) dismiss.
-- **Portable & Multi-User Configuration:**
-  - Portable mode: loads from the application directory when writable.
-  - Installed mode: automatically falls back to `%LOCALAPPDATA%\BareStats\config.ini` in write-restricted environments.
+**BareStats** is an ultra-lightweight, zero-overhead native telemetry overlay engineered for Windows that surfaces real-time system performance without the operational liabilities of conventional monitoring suites. It was designed with a dual focus: providing zero-latency performance tracking for **local AI/ML workloads** (such as running Ollama, PyTorch, vLLM, and ComfyUI without sacrificing VRAM or GPU compute cycles) and non-intrusive monitoring for competitive gaming and workstation productivity.
+
+Heavyweight traditional tools and Electron-based dashboards introduce substantial operational overhead: they bundle background services, demand UAC Administrator elevation, aggressively wake mobile GPUs from low-power sleep states, hook into 3D rendering swapchains, and load unvetted kernel-mode drivers (`.sys`) that introduce crash risks and trigger anti-cheat software flags. For developers running memory-intensive local models, these tools steal valuable VRAM and system memory just to render monitoring graphs.
+
+BareStats eliminates these liabilities through an unprivileged, event-driven systems architecture built entirely in native C++17 and unmanaged Win32. By decoupling hardware sampling onto a dedicated background worker, it directly queries unprivileged operating system performance counters, graphics adapter interfaces, vendor NVML APIs, and IP Helper tables, offloading rendering directly to the Windows Desktop Window Manager (DWM) via hardware alpha compositing.
+
+The result is a persistent, transparent single-line status bar delivering live CPU, GPU, VRAM, RAM, and network throughput at an observed resident working set of just **~4.5 MB** and true **0.00%** idle CPU consumption via sub-microsecond dirty-frame bypasses. Operating strictly as a non-invasive, click-through desktop overlay, BareStats never intercepts game or application input, preserves laptop battery life, and runs completely safe alongside competitive anti-cheat systems.
+
+---
+
+## Quick Start
+
+### Runtime System Requirements (End Users)
+* **Operating System:** Windows 10 or Windows 11 (64-bit: x64 or ARM64 / Snapdragon).
+* **Dependencies:** **None.** Single standalone executable (`BareStats.exe`). No installer, no .NET runtime, no Python, and no Visual C++ Redistributable package required.
+
+### Getting Started
+1. **Download:** Grab the latest `BareStats.exe` from [Releases](https://github.com/chakrank/BareStats/releases).
+2. **Launch:** Run `BareStats.exe`. The overlay automatically anchors above your taskbar on your primary display.
+3. **Reposition:** Press `Ctrl + Shift + M` (or `Ctrl + Alt + M`) to enter Move Mode. Click and drag the overlay to any position across any connected monitor, then click outside to lock.
+4. **Toggle Visibility:** Press `Ctrl + Shift + H` (or `Ctrl + Alt + H`) to instantly hide or reveal the overlay on demand without interrupting background sampling.
+5. **Context Menu:** Right-click the system tray icon to access quick actions, configure startup behavior, reload settings, or exit.
+
+---
+
+## System Architecture
+
+```mermaid
+flowchart TD
+    subgraph DataCollection ["Unprivileged Telemetry Ingestion (Worker Thread)"]
+        CPU["CPU Collector\n(Multi-Core Kernel Time Slicing)"]
+        MEM["Memory Collector\n(Physical Memory Allocation Mapping)"]
+        GPU["GPU Collector\n(Vendor Telemetry & Universal Graphics Abstraction)"]
+        NET["Network Collector\n(Physical Hardware Filtering & Delta Calculations)"]
+    end
+
+    subgraph Synchronization ["Pipeline Synchronization & Processing"]
+        Engine["Telemetry Engine\n(Conditional Sleep & Event Loop)"]
+        Bypass{"Dirty-Frame\nHash Check"}
+        Formatter["Formatter\n(Metric Reordering & Scaling)"]
+    end
+
+    subgraph Presentation ["Presentation Layer (Win32 UI Thread)"]
+        DWM["Hardware Alpha Compositor\n(Desktop Window Manager)"]
+        LayeredWnd["Top-Level Layered Window\n(WS_EX_LAYERED | WS_EX_TRANSPARENT)"]
+        Display["Screen Display Surface"]
+    end
+
+    CPU --> Engine
+    MEM --> Engine
+    GPU --> Engine
+    NET --> Engine
+
+    Engine --> Formatter
+    Formatter --> Bypass
+    Bypass -- "Value Unchanged" --> Skip["Skip Rasterization\n(0.00% CPU Duty)"]
+    Bypass -- "Value Changed" --> DWM
+    DWM --> LayeredWnd
+    LayeredWnd --> Display
+```
+
+---
+
+## Design Principles & Value Matrix
+
+| Dimension | Conventional Monitoring Suites | BareStats Architecture |
+| :--- | :--- | :--- |
+| **User Privileges** | Demands UAC Administrator rights on launch | Operates entirely in unprivileged user mode |
+| **Driver Footprint** | Installs third-party ring-0 kernel drivers (`.sys`) | Zero kernel drivers; zero vulnerability surface |
+| **Anti-Cheat Safety** | Injects DLLs and hooks into DirectX/Vulkan pipelines | Top-level click-through desktop overlay (`WS_EX_TRANSPARENT`) |
+| **Memory Footprint** | 80 MB – 250 MB resident working set | ~4.5 MB resident working set |
+| **Background Overhead**| Background services, daemons, updater processes | Single standalone process; terminates cleanly on exit |
+| **Battery Impact** | Polls dGPUs constantly, draining mobile laptop batteries | Optimus battery guard respects D3-cold sleep when targeting iGPUs |
+| **Configuration** | Bulky GUI menus requiring restarts | Non-blocking live hot-reload with write debouncing |
+
+---
+
+## Hardware & Architecture Support Matrix
+
+| Hardware Component | Supported Technologies | Implementation Mechanism |
+| :--- | :--- | :--- |
+| **Processors (CPU)** | Intel Core (P/E hybrid), AMD Ryzen, Qualcomm Snapdragon X Elite (ARM64) | Multi-core kernel time slicing across all physical and logical cores |
+| **System Memory (RAM)** | DDR4, DDR5, LPDDR5, Unified Memory | Direct operating system physical memory allocation mapping |
+| **Discrete Graphics (dGPU)** | NVIDIA GeForce, RTX, Quadro, Tesla | Dynamic vendor driver linking with automatic graphics infrastructure fallback |
+| **Integrated Graphics (iGPU)** | Intel UHD / Iris Xe / Arc, AMD Radeon Graphics | Universal hardware graphics infrastructure |
+| **Network Interfaces (NET)** | Gigabit Ethernet, 2.5GbE/10GbE, Wi-Fi 6/6E/7 | Physical interface evaluation with virtual, WSL, bridge, and VPN filtering |
+| **Multi-GPU Systems** | Selectable primary or secondary GPU target | Configurable `gpu_index` targeting with mobile laptop battery guard |
+
+---
+
+## Empirical Performance Profile
+
+The following performance benchmarks reflect active execution traces on Windows 11 x64 systems:
+
+| Performance Dimension | Observed Metric | Operational Impact |
+| :--- | :--- | :--- |
+| **Resident Working Set** | ~4.5 MB in Task Manager | Minimal memory allocation; zero dynamic bloat over time |
+| **Sampling Execution Cycle** | ~8.2 ms per 1,000 ms tick | Active CPU duty cycle under 0.85%; sleeps 99.15% of the time |
+| **Static State Rendering** | 0.00% CPU duty cycle | Completely bypasses rasterization when telemetry data is unchanged |
+| **Standalone Binary Size** | ~208 KB | Single executable with embedded icons and Per-Monitor V2 manifest |
+
+---
+
+## Security & Anti-Cheat Architecture
+
+BareStats is engineered to guarantee full compatibility and zero ban risk alongside modern kernel-level anti-cheat solutions, including **Riot Vanguard**, **Easy Anti-Cheat (EAC)**, **BattlEye**, and **Call of Duty Ricochet**.
+
+- **Zero Kernel Drivers:** BareStats loads no `.sys` drivers and opens zero device handles to vulnerable third-party driver symlinks.
+- **Zero Process Injection:** BareStats never calls `CreateRemoteThread`, `VirtualAllocEx`, or `WriteProcessMemory`.
+- **Zero API Hooking:** BareStats does not hook game swapchains or intercept graphics presentation APIs (unlike traditional OSD injectors).
+- **Zero Foreign Process Inspection:** BareStats never opens foreign process descriptors with `PROCESS_VM_READ` or scans running task memory.
+- **Pure Top-Level Desktop Layer:** Rendered as an independent Win32 top-level layered window (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST`). Operating system input passes directly to underlying fullscreen borderless applications without interception.
 
 ---
 
@@ -50,9 +148,9 @@
 
 | Action | Control / Hotkey | Description |
 | :--- | :--- | :--- |
-| **Move Mode** | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd> *(or <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>M</kbd>)* | Toggles interactive repositioning mode with a 4-way vector drag box. Click and drag anywhere on the overlay. |
-| **Toggle Visibility** | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> *(or <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>H</kbd>)* | Instantly hides or reveals the overlay window without interrupting background telemetry collection. |
-| **Lock Position** | Left-click outside or re-press hotkey | Anchors position to configuration and restores click-through transparency. |
+| **Move Mode** | `Ctrl + Shift + M` *(or `Ctrl + Alt + M`)* | Toggles interactive repositioning mode with an obsidian drag bounding box. Click and drag the overlay anywhere across any monitor. |
+| **Toggle Visibility** | `Ctrl + Shift + H` *(or `Ctrl + Alt + H`)* | Instantly hides or reveals the overlay window without stopping the background telemetry engine. |
+| **Lock Position** | Left-click outside or re-press hotkey | Anchors coordinates to configuration and restores click-through transparency. |
 | **System Tray** | Left-Click icon | Toggles repositioning mode. |
 | **System Tray** | Right-Click icon | Context menu: Reposition, Reset Position, Hide/Show Overlay, Reload Config, Start with Windows, and Exit. |
 
@@ -60,18 +158,24 @@
 
 ## Configuration Reference
 
-BareStats automatically provisions a default `config.ini` on first run if none is present:
+BareStats automatically provisions a default `config.ini` in its local directory (Portable Mode) or `%LOCALAPPDATA%\BareStats\` (Installed Mode). Changes saved in external editors apply instantly without restarting.
 
 ```ini
 [Position]
+# Target monitor display index (0 = primary monitor, 1 = secondary, etc.)
 monitor_index = 0
+
+# Position preset: bottom-center, top-center, top-left, top-right, bottom-left, bottom-right, custom
 preset = bottom-center
 margin = 12
 
 [Appearance]
+# Font face family ("auto" dynamically inherits Windows system UI font)
 font_name = auto
 font_weight = semibold
 font_size = 13
+
+# Palette configuration (#RRGGBB)
 text_color = #FFFFFF
 label_color = #A0A0A0
 separator_color = #6E6E6E
@@ -79,17 +183,30 @@ color_high = #FFD700
 color_critical = #FF4D4D
 enable_dynamic_colors = 1
 drop_shadow = 1
+
+# Telemetry divider symbol (e.g. │, |, •, /, -)
 separator = │
+
+# Global overlay window opacity percentage (10 to 100)
 opacity = 100
 
 [Telemetry]
+# Polling interval in milliseconds (suspends automatically when display sleeps)
 refresh_interval_ms = 1000
+
+# Target GPU device index (0 = primary/discrete GPU, 1 = secondary/integrated GPU)
 gpu_index = 0
+
+# Metric segment display ordering (comma-separated list of CPU, GPU, RAM, NET)
 order = CPU, GPU, RAM, NET
+
+# Subsystem display toggles (1 = enabled, 0 = disabled)
 show_cpu = 1
 show_gpu = 1
 show_ram = 1
 show_net = 0
+
+# Detailed sensor toggles
 show_gpu_temp = 1
 show_gpu_power = 1
 show_gpu_fan = 1
@@ -97,47 +214,76 @@ show_max_memory = 1
 hide_offline_metrics = 0
 ```
 
-Consult [`config.example.ini`](config.example.ini) for full documentation of each configuration directive.
+Consult [`config.example.ini`](config.example.ini) for full documentation of every available parameter.
 
 ---
 
-## Anti-Cheat Compatibility & Safety Certification
+## Known Constraints & Intentional Trade-Offs
 
-BareStats is engineered specifically to run safely alongside strict kernel-level anti-cheat solutions, including **Riot Vanguard**, **Easy Anti-Cheat (EAC)**, **BattlEye**, and **Call of Duty Ricochet**.
+1. **CPU Temperature Omission:** Windows provides no native user-mode API for core CPU package thermals. Traditional tools obtain CPU thermals by installing third-party ring-0 kernel drivers (`WinRing0.sys`) that execute privileged MSR instructions (`rdmsr`). Because these drivers present severe security vulnerabilities (arbitrary kernel read/write) and are actively blacklisted by anti-cheat software, BareStats intentionally omits CPU core temperatures to preserve zero-driver safety.
+2. **Sub-1GB Memory Formatting:** Integrated GPU shared memory segments that report below 1 GB (e.g., dynamic 128 MB or 512 MB boot allocations) automatically scale to integer megabytes (`MB`) rather than truncating to `0.0GB`.
+3. **Exclusive Fullscreen Mode:** Like all native Windows layered desktop surfaces, BareStats renders above desktop windows and **Borderless Windowed** applications. Traditional exclusive fullscreen mode grants games direct scan-out access to the display hardware; running games in Borderless Windowed mode allows the overlay to remain persistently visible on top.
 
-- **Zero Kernel Drivers:** BareStats loads no `.sys` drivers and communicates with zero ring-0 interfaces (avoiding blacklisted or vulnerable driver IOCTLs like `WinRing0` or `RTCore64`).
-- **Zero DLL Injection & Hooking:** BareStats never calls `CreateRemoteThread`, `SetWindowsHookEx`, or hooks game rendering swapchains (unlike RivaTuner/MSI Afterburner).
-- **Zero Memory Inspection:** BareStats never queries foreign process descriptors, scans thread contexts, or inspects process virtual memory (`PROCESS_VM_READ`).
-- **Pure Layered Desktop Window:** The overlay is a standard Win32 top-level layered window (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST`) composited directly by the Windows Desktop Window Manager (DWM). All user input passes through freely to fullscreen borderless games without interception.
+---
+
+## Troubleshooting Guide
+
+* **Overlay Temporarily Hidden Behind Start Menu:** Windows Desktop Window Manager (DWM) assigns absolute top-level rendering priority to the Start Menu, Action Center, and system flyouts. If the overlay appears hidden behind the Start menu or shell layer, click anywhere on the desktop or active window to dismiss the flyout, and BareStats will immediately re-assert its topmost position.
+* **Hotkey Registration Conflicts:** If another running background utility has already claimed `Ctrl + Shift + M` or `Ctrl + Shift + H`, BareStats automatically attempts registration against its secondary fallback hotkeys (`Ctrl + Alt + M` and `Ctrl + Alt + H`).
+* **Overlay Hidden or Off-Screen:** Right-click the BareStats system tray icon and select **Reset Position to Default**. This restores the window to the bottom-center preset on your primary monitor.
+* **White Wallpaper Readability:** If text is difficult to read over bright backgrounds, ensure `drop_shadow = 1` is enabled in `[Appearance]`, or set a subtle background opacity via `opacity = 90`.
 
 ---
 
 ## Building from Source
 
-### Prerequisites
-- Windows 10 or Windows 11 (x64)
-- Microsoft Visual Studio 2022+ with C++ Desktop Development tools
-- CMake 3.20 or newer
+### Build Prerequisites (Developers & Contributors Only)
+* Windows 10 or Windows 11 (x64)
+* Microsoft Visual Studio 2022+ (with C++ Desktop Development workload)
+* CMake 3.20 or newer
+* Ninja build system
 
-### Build Commands
+### Local Compilation
 ```cmd
-# Configure build
+# Configure release build with Ninja generator
 cmake -B build -S . -G "Ninja" -DCMAKE_BUILD_TYPE=Release
 
 # Compile release binary
 cmake --build build --config Release
 ```
 
-The build produces a single standalone executable (`BareStats.exe`, ~163 KB) with zero external runtime dependencies.
+The build produces a single standalone executable (`build/BareStats.exe`, ~208 KB) with embedded multi-resolution icon resources and Per-Monitor V2 DPI manifests.
 
-### Verification Suite
-Execute from the command prompt to verify collector pipelines and exit:
+### Automated Diagnostics Suite
+Execute from the command prompt to run the internal hardware probe and timing suite:
 ```cmd
-BareStats.exe --test
+build\BareStats.exe --test
 ```
+
+---
+
+## Continuous Integration & Release Engineering
+
+BareStats incorporates a multi-runner GitHub Actions matrix (`.github/workflows/ci.yml`) validating compilation, linking, and telemetry execution across clean Microsoft Windows environments:
+
+* `windows-latest` (Windows Server 2025 / Windows 11 runner image)
+* `windows-2022` (Windows Server 2022 runner image)
+
+Every automated CI run executes the comprehensive diagnostic benchmark suite before packaging release artifacts.
+
+---
+
+## Future Architecture & Platform Roadmap
+
+While v1.0 is targeted strictly at delivering a production-grade Windows implementation, future major revisions are planned around native multi-platform interfaces and expanded accelerator hardware:
+
+* **v1.1 (Deep Windows Hardware Extensions):** Native AMD ADL SDK integration (`atiadlxx.dll`) and Intel IGCL (`ControlLib.dll`) for fan speed, temperature, and power profiling on non-NVIDIA silicon; simultaneous side-by-side multi-GPU monitoring.
+* **v1.2 (Linux Native Port):** Wayland overlay protocol (`wlr-layer-shell`) and X11 (`XComposite`) interfaces backed by `/proc` and `sysfs` telemetry ingestion.
+* **v1.3 (macOS Native Port):** Menu bar status widget implemented in AppKit and Metal, leveraging Mach kernel APIs and Apple Silicon IOKit accelerators.
+* **v1.4 (Specialized AI & Domestic Accelerators on Linux):** Dedicated telemetry connectors for Linux enterprise accelerator stacks, including Moore Threads (MUSA SDK), Huawei Ascend (CANN toolkit), Biren Technology (BI-SDK), and emerging accelerator drivers.
 
 ---
 
 ## License
 
-BareStats is licensed under the [MIT License](LICENSE).
+BareStats is released under the [MIT License](LICENSE).

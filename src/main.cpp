@@ -44,7 +44,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     // Support --test or --cli for verification
     if (fullCmd.find(L"--test") != std::wstring::npos || fullCmd.find(L"--cli") != std::wstring::npos) {
-        OutputToConsole("\nBareStats CLI Verification (v0.9.0)\n");
+        OutputToConsole("\nBareStats CLI Verification (v1.0.0)\n");
         OutputToConsole("Initializing telemetry collectors...\n");
 
         std::string configPath = ConfigManager::GetDefaultConfigPath();
@@ -80,15 +80,32 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         networkCollector.Collect();
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-        for (int i = 0; i < 3; ++i) {
+        double totalCpuUs = 0, totalMemUs = 0, totalGpuUs = 0, totalNetUs = 0, totalFmtUs = 0;
+        int sampleCount = 3;
+
+        for (int i = 0; i < sampleCount; ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             SystemMetrics metrics;
+
+            auto t0 = std::chrono::high_resolution_clock::now();
             metrics.cpu = cpuCollector.Collect();
+            auto t1 = std::chrono::high_resolution_clock::now();
             metrics.memory = memoryCollector.Collect();
+            auto t2 = std::chrono::high_resolution_clock::now();
             metrics.gpu = gpuCollector.Collect(config.gpuIndex);
+            auto t3 = std::chrono::high_resolution_clock::now();
             metrics.network = networkCollector.Collect();
+            auto t4 = std::chrono::high_resolution_clock::now();
 
             std::string line = "[" + std::to_string(i + 1) + "/3] " + Formatter::FormatUtf8(metrics, &config) + "\n";
+            auto t5 = std::chrono::high_resolution_clock::now();
+
+            totalCpuUs += std::chrono::duration<double, std::micro>(t1 - t0).count();
+            totalMemUs += std::chrono::duration<double, std::micro>(t2 - t1).count();
+            totalGpuUs += std::chrono::duration<double, std::micro>(t3 - t2).count();
+            totalNetUs += std::chrono::duration<double, std::micro>(t4 - t3).count();
+            totalFmtUs += std::chrono::duration<double, std::micro>(t5 - t4).count();
+
             OutputToConsole(line);
 
             if (i == 0) {
@@ -105,7 +122,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             }
         }
 
-        OutputToConsole("Test completed successfully.\n\n");
+        double avgCpuUs = totalCpuUs / sampleCount;
+        double avgMemUs = totalMemUs / sampleCount;
+        double avgGpuUs = totalGpuUs / sampleCount;
+        double avgNetUs = totalNetUs / sampleCount;
+        double avgFmtUs = totalFmtUs / sampleCount;
+        double avgTotalUs = avgCpuUs + avgMemUs + avgGpuUs + avgNetUs + avgFmtUs;
+        double dutyCyclePct = (avgTotalUs / (config.refreshIntervalMs * 1000.0)) * 100.0;
+
+        OutputToConsole("\n--------------------------------------------------------------------------------\n");
+        OutputToConsole("Empirical Sampling Latencies (Microsecond Precision Timing)\n");
+        OutputToConsole("--------------------------------------------------------------------------------\n");
+        OutputToConsole("  CPU Sampling:       " + std::to_string(static_cast<int>(avgCpuUs)) + " us (GetSystemTimes kernel delta)\n");
+        OutputToConsole("  Memory Sampling:    " + std::to_string(static_cast<int>(avgMemUs)) + " us (GlobalMemoryStatusEx)\n");
+        OutputToConsole("  GPU Sampling:       " + std::to_string(static_cast<int>(avgGpuUs)) + " us (NVML / DXGI query)\n");
+        OutputToConsole("  Network Sampling:   " + std::to_string(static_cast<int>(avgNetUs)) + " us (GetIfTable2 filtering)\n");
+        OutputToConsole("  String Formatting:  " + std::to_string(static_cast<int>(avgFmtUs)) + " us (Layout & Unicode assembly)\n");
+        OutputToConsole("--------------------------------------------------------------------------------\n");
+        OutputToConsole("  Total Cycle Time:   " + std::to_string(static_cast<int>(avgTotalUs)) + " us (" +
+            std::to_string(avgTotalUs / 1000.0).substr(0, 5) + " ms)\n");
+        OutputToConsole("  Active Duty Cycle:  " + std::to_string(dutyCyclePct).substr(0, 6) + "% at " +
+            std::to_string(config.refreshIntervalMs) + "ms polling interval\n");
+        OutputToConsole("--------------------------------------------------------------------------------\n");
+        OutputToConsole("Verification completed successfully.\n\n");
         return 0;
     }
 
