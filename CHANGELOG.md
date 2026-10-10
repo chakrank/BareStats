@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-10-10
+
+### Added
+- **NVML v2 Driver Reservation Decoupling:** Dynamically queries `nvmlDeviceGetMemoryInfo_v2` to isolate firmware and driver static reservations from active application allocations, delivering a true 0.0 GB idle baseline.
+- **Configurable VRAM Reporting Modes (`vram_mode`):**
+  - `physical`: Gross hardware silicon capacity (e.g. 16.0 GB) matching retail packaging and Task Manager.
+  - `usable`: Net allocatable capacity (total minus driver reservations, e.g. 15.6 GB), preventing unexpected CUDA Out of Memory (OOM) errors during local LLM model loading (Ollama, PyTorch, vLLM).
+- **Native AMD ADL Telemetry Engine (`AdlCollector`):** Zero-driver runtime loading of `atiadlxx.dll` / `atiadlxy.dll` for AMD Radeon core thermals, board power wattage, and fan RPM/percentage.
+- **Native Intel IGCL Telemetry Engine (`IgclCollector`):** Dynamic runtime loading of `ControlLib.dll` for Intel Arc and Iris Xe silicon to query package thermals, power draw, and fan speeds in user mode.
+- **Simultaneous Side-by-Side Multi-GPU Monitoring:** Flexible `gpu_index` targeting supporting single adapters (`gpu_index = 0`), comma-separated adapter lists (`gpu_index = 0, 1`), and wildcard selection (`gpu_index = all`) with multi-GPU segment formatting (e.g. `│ GPU0 ... │ GPU1 ... │`).
+- **Universal Windows D3DKMT Engine Utilization Fallback (`D3dKmtCollector`):** Unprivileged kernel scheduling query (`D3DKMTQueryStatistics` from `gdi32.dll`) providing real-time GPU engine utilization % for integrated graphics (Intel UHD / Iris Xe, AMD APUs) and Qualcomm Snapdragon X Elite (ARM64) where discrete vendor SDKs are unavailable.
+- **Hardware-Agnostic Driver Mock Testing Harness (`BareStatsTests.exe`):** Implemented synthetic vendor mock libraries (`mock_atiadlxx.dll`, `mock_ControlLib.dll`, `mock_nvml.dll`) and an automated 11-step verification suite integrated with CTest and GitHub Actions CI to deterministically test driver telemetry, VRAM math, multi-GPU layouts, and fault recovery without physical hardware dependencies.
+- **Fortified Driver Lifecycle & Reset Recovery:** Added double-unload protection and dynamic function pointer nullification across ADL, IGCL, and NVML recovery pipelines, preventing access violations during GPU reset and modern standby wake transitions.
+
 ## [1.0.0] - 2026-10-04
 
 ### Added

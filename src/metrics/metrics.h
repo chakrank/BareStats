@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 #include <optional>
 
 namespace BareStats {
@@ -19,6 +20,7 @@ struct GpuMetrics {
     std::optional<double> utilizationPercent;
     uint64_t memoryUsedBytes = 0;
     uint64_t memoryTotalBytes = 0;
+    uint64_t memoryReservedBytes = 0;
     std::optional<uint32_t> temperatureC;
     std::optional<uint32_t> tempSlowdownLimitC;
     std::optional<uint32_t> powerWatts;
@@ -43,7 +45,8 @@ struct NetworkMetrics {
 
 struct SystemMetrics {
     CpuMetrics cpu;
-    GpuMetrics gpu;
+    GpuMetrics gpu;               // Primary targeted GPU (for single-GPU compatibility)
+    std::vector<GpuMetrics> gpus; // All targeted GPUs for side-by-side multi-GPU monitoring
     MemoryMetrics memory;
     NetworkMetrics network;
 };

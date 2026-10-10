@@ -163,68 +163,72 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
 
         hasPreviousBlock = true;
     };
-
-    auto appendGpu = [&]() {
+ 
+    auto appendSingleGpu = [&](const GpuMetrics& gpu, const std::wstring& label) {
         appendSeparator();
-        segments.push_back({ L" GPU ", MetricSeverity::Normal, SegmentType::Label, false, false });
+        segments.push_back({ L" " + label + L" ", MetricSeverity::Normal, SegmentType::Label, false, false });
 
-        if (metrics.gpu.isAvailable) {
+        if (gpu.isAvailable) {
             bool hasPrintedData = false;
 
             // GPU Util (only render if known - never output false 0%)
-            if (metrics.gpu.utilizationPercent.has_value()) {
-                MetricSeverity gpuSev = applySeverity(GetSeverity(*metrics.gpu.utilizationPercent, 80.0, 90.0));
-                segments.push_back({ std::to_wstring(static_cast<int>(std::round(*metrics.gpu.utilizationPercent))), gpuSev, SegmentType::Number, true, false });
+            if (gpu.utilizationPercent.has_value()) {
+                MetricSeverity gpuSev = applySeverity(GetSeverity(*gpu.utilizationPercent, 80.0, 90.0));
+                segments.push_back({ std::to_wstring(static_cast<int>(std::round(*gpu.utilizationPercent))), gpuSev, SegmentType::Number, true, false });
                 segments.push_back({ L"%", gpuSev, SegmentType::Unit, false, false });
                 hasPrintedData = true;
             }
 
             // VRAM
-            if (metrics.gpu.memoryTotalBytes > 0) {
-                double vramPct = (static_cast<double>(metrics.gpu.memoryUsedBytes) / metrics.gpu.memoryTotalBytes) * 100.0;
+            if (gpu.memoryTotalBytes > 0) {
+                uint64_t totalBytes = gpu.memoryTotalBytes;
+                if (config && config->vramMode == VramMode::Usable && gpu.memoryReservedBytes > 0 && totalBytes > gpu.memoryReservedBytes) {
+                    totalBytes -= gpu.memoryReservedBytes;
+                }
+                double vramPct = (static_cast<double>(gpu.memoryUsedBytes) / totalBytes) * 100.0;
                 MetricSeverity vramSev = applySeverity(GetSeverity(vramPct, 80.0, 90.0));
                 if (hasPrintedData) segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
-                AppendMemorySegments(segments, metrics.gpu.memoryUsedBytes, metrics.gpu.memoryTotalBytes, vramSev, showMaxMemory);
+                AppendMemorySegments(segments, gpu.memoryUsedBytes, totalBytes, vramSev, showMaxMemory);
                 hasPrintedData = true;
             }
 
             // GPU Temp
-            if (showGpuTemp && metrics.gpu.temperatureC.has_value()) {
-                double critLimit = metrics.gpu.tempSlowdownLimitC.has_value() 
-                    ? static_cast<double>(*metrics.gpu.tempSlowdownLimitC - 2) 
+            if (showGpuTemp && gpu.temperatureC.has_value()) {
+                double critLimit = gpu.tempSlowdownLimitC.has_value() 
+                    ? static_cast<double>(*gpu.tempSlowdownLimitC - 2) 
                     : 83.0;
                 if (critLimit > 83.0) critLimit = 83.0;
                 double highLimit = critLimit - 8.0;
-                MetricSeverity tempSev = applySeverity(GetSeverity(*metrics.gpu.temperatureC, highLimit, critLimit));
+                MetricSeverity tempSev = applySeverity(GetSeverity(*gpu.temperatureC, highLimit, critLimit));
                 if (hasPrintedData) segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
-                segments.push_back({ std::to_wstring(*metrics.gpu.temperatureC), tempSev, SegmentType::Number, true, false });
+                segments.push_back({ std::to_wstring(*gpu.temperatureC), tempSev, SegmentType::Number, true, false });
                 segments.push_back({ L"\x00B0\x0043", tempSev, SegmentType::Unit, false, false });
                 hasPrintedData = true;
             }
 
             // GPU Power
-            if (showGpuPower && metrics.gpu.powerWatts.has_value()) {
+            if (showGpuPower && gpu.powerWatts.has_value()) {
                 MetricSeverity powerSev = MetricSeverity::Normal;
-                if (metrics.gpu.powerLimitWatts.has_value() && *metrics.gpu.powerLimitWatts > 0) {
-                    double powerPct = (static_cast<double>(*metrics.gpu.powerWatts) / *metrics.gpu.powerLimitWatts) * 100.0;
+                if (gpu.powerLimitWatts.has_value() && *gpu.powerLimitWatts > 0) {
+                    double powerPct = (static_cast<double>(*gpu.powerWatts) / *gpu.powerLimitWatts) * 100.0;
                     powerSev = applySeverity(GetSeverity(powerPct, 85.0, 95.0));
                 }
                 if (hasPrintedData) segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
-                segments.push_back({ std::to_wstring(*metrics.gpu.powerWatts), powerSev, SegmentType::Number, true, false });
+                segments.push_back({ std::to_wstring(*gpu.powerWatts), powerSev, SegmentType::Number, true, false });
                 segments.push_back({ L"W", powerSev, SegmentType::Unit, false, false });
                 hasPrintedData = true;
             }
 
             // GPU Fan
             if (showGpuFan) {
-                if (metrics.gpu.fanRpm.has_value()) {
+                if (gpu.fanRpm.has_value()) {
                     if (hasPrintedData) segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
-                    segments.push_back({ std::to_wstring(*metrics.gpu.fanRpm), MetricSeverity::Normal, SegmentType::Number, true, false });
+                    segments.push_back({ std::to_wstring(*gpu.fanRpm), MetricSeverity::Normal, SegmentType::Number, true, false });
                     segments.push_back({ L"RPM", MetricSeverity::Normal, SegmentType::Unit, false, false });
-                } else if (metrics.gpu.fanSpeedPercent.has_value()) {
-                    MetricSeverity fanSev = applySeverity(GetSeverity(*metrics.gpu.fanSpeedPercent, 80.0, 95.0));
+                } else if (gpu.fanSpeedPercent.has_value()) {
+                    MetricSeverity fanSev = applySeverity(GetSeverity(*gpu.fanSpeedPercent, 80.0, 95.0));
                     if (hasPrintedData) segments.push_back({ L" ", MetricSeverity::Normal, SegmentType::Unit, false, false });
-                    segments.push_back({ std::to_wstring(*metrics.gpu.fanSpeedPercent), fanSev, SegmentType::Number, true, false });
+                    segments.push_back({ std::to_wstring(*gpu.fanSpeedPercent), fanSev, SegmentType::Number, true, false });
                     segments.push_back({ L"%", fanSev, SegmentType::Unit, false, false });
                 }
             }
@@ -237,6 +241,17 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
         }
 
         hasPreviousBlock = true;
+    };
+
+    auto appendGpu = [&]() {
+        if (metrics.gpus.size() > 1) {
+            for (size_t g = 0; g < metrics.gpus.size(); ++g) {
+                std::wstring label = L"GPU" + std::to_wstring(g);
+                appendSingleGpu(metrics.gpus[g], label);
+            }
+        } else {
+            appendSingleGpu(metrics.gpu, L"GPU");
+        }
     };
 
     auto appendRam = [&]() {
@@ -282,8 +297,14 @@ std::vector<FormattedSegment> Formatter::FormatSegments(const SystemMetrics& met
     for (const auto& item : activeOrder) {
         if (item == "CPU" && showCpu) {
             appendCpu();
-        } else if (item == "GPU" && showGpu && (!hideOffline || metrics.gpu.isAvailable)) {
-            appendGpu();
+        } else if (item == "GPU" && showGpu) {
+            bool hasAvailableGpu = metrics.gpu.isAvailable;
+            for (const auto& g : metrics.gpus) {
+                if (g.isAvailable) { hasAvailableGpu = true; break; }
+            }
+            if (!hideOffline || hasAvailableGpu) {
+                appendGpu();
+            }
         } else if (item == "RAM" && showRam) {
             appendRam();
         } else if (item == "NET" && showNet && (!hideOffline || metrics.network.isAvailable)) {

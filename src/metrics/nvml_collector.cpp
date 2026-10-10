@@ -14,23 +14,43 @@ struct NvmlMemory {
     unsigned long long used;
 };
 
-NvmlCollector::NvmlCollector() {
-    LoadNvml();
+struct NvmlMemory_v2 {
+    unsigned int version;
+    unsigned long long total;
+    unsigned long long reserved;
+    unsigned long long free;
+    unsigned long long used;
+};
+
+NvmlCollector::NvmlCollector(const char* customDllPath) {
+    LoadNvml(customDllPath);
 }
 
 NvmlCollector::~NvmlCollector() {
     UnloadNvml();
 }
 
-bool NvmlCollector::LoadNvml() {
-    // Try system32 nvml.dll or default PATH
-    nvmlDll_ = LoadLibraryA("nvml.dll");
-    if (!nvmlDll_) {
-        // Fallback common path
-        nvmlDll_ = LoadLibraryA("C:\\Windows\\System32\\nvml.dll");
+bool NvmlCollector::LoadNvml(const char* customDllPath) {
+    if (customDllPath && customDllPath[0] != '\0') {
+        customDllPath_ = customDllPath;
     }
-    if (!nvmlDll_) {
-        nvmlDll_ = LoadLibraryA("C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvml.dll");
+
+    if (!customDllPath_.empty()) {
+        nvmlDll_ = LoadLibraryA(customDllPath_.c_str());
+    } else {
+        char envBuf[MAX_PATH];
+        DWORD len = GetEnvironmentVariableA("BARESTATS_MOCK_NVML_DLL", envBuf, MAX_PATH);
+        if (len > 0 && len < MAX_PATH) {
+            nvmlDll_ = LoadLibraryA(envBuf);
+        } else {
+            nvmlDll_ = LoadLibraryA("nvml.dll");
+            if (!nvmlDll_) {
+                nvmlDll_ = LoadLibraryA("C:\\Windows\\System32\\nvml.dll");
+            }
+            if (!nvmlDll_) {
+                nvmlDll_ = LoadLibraryA("C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvml.dll");
+            }
+        }
     }
 
     if (!nvmlDll_) {
@@ -59,6 +79,7 @@ bool NvmlCollector::LoadNvml() {
     fnNvmlDeviceGetName_ = (nvmlDeviceGetName_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetName");
     fnNvmlDeviceGetUtilizationRates_ = (nvmlDeviceGetUtilizationRates_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetUtilizationRates");
     fnNvmlDeviceGetMemoryInfo_ = (nvmlDeviceGetMemoryInfo_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetMemoryInfo");
+    fnNvmlDeviceGetMemoryInfo_v2_ = (nvmlDeviceGetMemoryInfo_v2_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetMemoryInfo_v2");
     fnNvmlDeviceGetTemperature_ = (nvmlDeviceGetTemperature_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetTemperature");
     fnNvmlDeviceGetPowerUsage_ = (nvmlDeviceGetPowerUsage_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetPowerUsage");
     fnNvmlDeviceGetFanSpeed_ = (nvmlDeviceGetFanSpeed_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetFanSpeed");
@@ -93,11 +114,12 @@ void NvmlCollector::UnloadNvml() {
     isAvailable_ = false;
     deviceHandle_ = nullptr;
     activeDeviceIndex_ = 0xFFFFFFFF;
+    fnNvmlDeviceGetMemoryInfo_v2_ = nullptr;
 }
 
 bool NvmlCollector::Recover() {
     UnloadNvml();
-    return LoadNvml();
+    return LoadNvml(customDllPath_.empty() ? nullptr : customDllPath_.c_str());
 }
 
 void NvmlCollector::Shutdown() {
@@ -145,8 +167,16 @@ bool NvmlCollector::Collect(GpuMetrics& metrics, uint32_t deviceIndex) {
         }
     }
 
-    // Memory
-    if (fnNvmlDeviceGetMemoryInfo_) {
+    // Memory (prefer v2 to exclude internal driver/hardware reservations)
+    if (fnNvmlDeviceGetMemoryInfo_v2_) {
+        NvmlMemory_v2 mem2{};
+        mem2.version = static_cast<unsigned int>(sizeof(NvmlMemory_v2) | (2 << 24));
+        if (fnNvmlDeviceGetMemoryInfo_v2_(deviceHandle_, &mem2) == 0) {
+            metrics.memoryTotalBytes = mem2.total;
+            metrics.memoryReservedBytes = mem2.reserved;
+            metrics.memoryUsedBytes = mem2.used;
+        }
+    } else if (fnNvmlDeviceGetMemoryInfo_) {
         NvmlMemory mem{};
         if (fnNvmlDeviceGetMemoryInfo_(deviceHandle_, &mem) == 0) {
             metrics.memoryTotalBytes = mem.total;

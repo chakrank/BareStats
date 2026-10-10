@@ -3,34 +3,40 @@
 > **An ultra-lightweight, zero-overhead native system telemetry overlay for Windows.**
 
 [![CI Matrix](https://github.com/chakrank/BareStats/actions/workflows/ci.yml/badge.svg)](https://github.com/chakrank/BareStats/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/Release-v1.0.0-blue.svg)](https://github.com/chakrank/BareStats/releases)
+[![Release](https://img.shields.io/badge/Release-v1.1.0-blue.svg)](https://github.com/chakrank/BareStats/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ---
 
 ```text
+Single-GPU Mode:
 │ CPU 12% │ GPU 45% 4.2/16GB 52°C 85W 40% │ RAM 12.3/16GB │ NET 1.2M↓ 0.4M↑ │
+
+Simultaneous Side-by-Side Multi-GPU Mode (gpu_index = 0, 1 or all):
+│ CPU 12% │ GPU0 14% 0/128MB │ GPU1 45% 4.2/16GB 52°C 85W 40% │ RAM 12.3/16GB │
 ```
 
-| Metric Segment    | Metric Name           | Description & Behavior                                                  |
-| :---------------- | :-------------------- | :---------------------------------------------------------------------- |
-| `CPU 12%`         | Processor Utilization | Aggregate compute load across all physical and logical cores            |
-| `GPU 45%`         | GPU Core Compute      | Active graphics engine utilization                                      |
-| `4.2/16GB`        | Dedicated VRAM        | Allocated video memory vs. total capacity (auto-scales to MB for iGPUs) |
-| `52°C`            | GPU Temperature       | Silicon core temperature with dynamic thermal threshold coloring        |
-| `85W`             | Board Power Draw      | Real-time graphics package wattage relative to rated TDP limit          |
-| `40%`             | Fan Speed             | Active cooling fan speed percentage (or RPM where reported)             |
-| `RAM 12.3/16GB`   | System Memory         | Physical RAM in use vs. installed capacity (toggleable to used-only)    |
-| `NET 1.2M↓ 0.4M↑` | Network Throughput    | Real-time physical gateway throughput (Download ↓ / Upload ↑)           |
+| Metric Segment    | Metric Name           | Description & Behavior                                                                 |
+| :---------------- | :-------------------- | :------------------------------------------------------------------------------------- |
+| `CPU 12%`         | Processor Utilization | Aggregate compute load across all physical and logical cores                           |
+| `GPU 45%`         | GPU Core Compute      | Active graphics engine load (NVML/ADL/IGCL with universal Windows D3DKMT fallback)     |
+| `4.2/16GB`        | Dedicated VRAM        | Allocated video memory vs capacity (`vram_mode = physical` gross or `usable` net alloc) |
+| `52°C`            | GPU Temperature       | Silicon core temperature with dynamic thermal threshold coloring                       |
+| `85W`             | Board Power Draw      | Real-time graphics package wattage relative to rated TDP limit                         |
+| `40%`             | Fan Speed             | Active cooling fan speed percentage (or RPM where reported)                            |
+| `RAM 12.3/16GB`   | System Memory         | Physical RAM in use vs. installed capacity (toggleable to used-only)                   |
+| `NET 1.2M↓ 0.4M↑` | Network Throughput    | Real-time physical gateway throughput (Download ↓ / Upload ↑)                          |
 
-_Note: Every metric segment can be independently toggled, reordered (`order = CPU, GPU, RAM, NET`), or styled with custom separators (`separator = │`) in `config.ini`._
+_Note: Every metric segment can be independently toggled, reordered (`order = CPU, GPU, RAM, NET`), configured for multi-GPU feeds (`gpu_index = 0, 1` or `all`), or styled with custom separators (`separator = │`) in `config.ini`._
 
 ### Live Desktop Taskbar Preview
 
 **Normal / Idle State:**
+
 ![BareStats Taskbar Overlay - Idle Baseline](resources/images/bare_stats_preview_idle.png)
 
 **High Workload & Dynamic Thermal Alerts:**
+
 ![BareStats Taskbar Overlay - Active Workload Alerts](resources/images/bare_stats_preview_load.png)
 
 ---
@@ -41,9 +47,11 @@ _Note: Every metric segment can be independently toggled, reordered (`order = CP
 
 Heavyweight traditional tools and Electron-based dashboards introduce substantial operational overhead: they bundle background services, demand UAC Administrator elevation, aggressively wake mobile GPUs from low-power sleep states, hook into 3D rendering swapchains, and load unvetted kernel-mode drivers (`.sys`) that introduce crash risks and trigger anti-cheat software flags. For developers running memory-intensive local models, these tools steal valuable VRAM and system memory just to render monitoring graphs.
 
-BareStats eliminates these liabilities through an unprivileged, event-driven systems architecture built entirely in native C++17 and unmanaged Win32. By decoupling hardware sampling onto a dedicated background worker, it directly queries unprivileged operating system performance counters, graphics adapter interfaces, vendor NVML APIs, and IP Helper tables, offloading rendering directly to the Windows Desktop Window Manager (DWM) via hardware alpha compositing.
+BareStats eliminates these liabilities through an unprivileged, event-driven systems architecture built in native C++17 and unmanaged Win32. By decoupling hardware sampling onto a dedicated background worker, it directly interfaces with universal Windows display driver scheduling (WDDM / DXGI), unprivileged OS performance counters, native vendor telemetry pipelines (NVIDIA NVML, AMD ADL, and Intel IGCL), and Windows IP Helper tables, offloading presentation directly to the Desktop Window Manager (DWM) via hardware alpha compositing.
 
-The result is a persistent, transparent single-line status bar delivering live CPU, GPU, VRAM, RAM, and network throughput at an observed resident working set of just **~4.5 MB** and true **0.00%** idle CPU consumption via sub-microsecond dirty-frame bypasses. Operating strictly as a non-invasive, click-through desktop overlay, BareStats never intercepts game or application input, preserves laptop battery life, and runs completely safe alongside competitive anti-cheat systems.
+With v1.1, BareStats introduces precision VRAM decoupling (`vram_mode`) that isolates static driver/firmware carve-outs from active application allocations to prevent CUDA Out of Memory (OOM) errors during local LLM model loading (Ollama, PyTorch, vLLM), native telemetry for AMD Radeon and Intel Arc silicon, universal graphics engine load tracking for integrated graphics and Qualcomm Snapdragon X Elite (ARM64), and simultaneous side-by-side multi-GPU monitoring.
+
+The result is a persistent, transparent single-line status bar delivering live CPU, multi-GPU, VRAM, RAM, and network throughput at an observed resident working set of just **~4.5 MB** and true **0.00%** idle CPU consumption via sub-microsecond dirty-frame bypasses. Operating strictly as a non-invasive, click-through desktop overlay, BareStats never intercepts game or application input, preserves laptop battery life, and runs completely safe alongside competitive anti-cheat systems.
 
 ---
 
@@ -118,14 +126,14 @@ flowchart TD
 
 ## Hardware & Architecture Support Matrix
 
-| Hardware Component             | Supported Technologies                                                  | Implementation Mechanism                                                      |
-| :----------------------------- | :---------------------------------------------------------------------- | :---------------------------------------------------------------------------- |
-| **Processors (CPU)**           | Intel Core (P/E hybrid), AMD Ryzen, Qualcomm Snapdragon X Elite (ARM64) | Multi-core kernel time slicing across all physical and logical cores          |
-| **System Memory (RAM)**        | DDR4, DDR5, LPDDR5, Unified Memory                                      | Direct operating system physical memory allocation mapping                    |
-| **Discrete Graphics (dGPU)**   | NVIDIA GeForce, RTX, Quadro, Tesla                                      | Dynamic vendor driver linking with automatic graphics infrastructure fallback |
-| **Integrated Graphics (iGPU)** | Intel UHD / Iris Xe / Arc, AMD Radeon Graphics                          | Universal hardware graphics infrastructure                                    |
-| **Network Interfaces (NET)**   | Gigabit Ethernet, 2.5GbE/10GbE, Wi-Fi 6/6E/7                            | Physical interface evaluation with virtual, WSL, bridge, and VPN filtering    |
-| **Multi-GPU Systems**          | Selectable primary or secondary GPU target                              | Configurable `gpu_index` targeting with mobile laptop battery guard           |
+| Hardware Component             | Supported Technologies                                                  | Implementation Mechanism                                                                                   |
+| :----------------------------- | :---------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------- |
+| **Processors (CPU)**           | Intel Core (P/E hybrid), AMD Ryzen, Qualcomm Snapdragon X Elite (ARM64) | Multi-core kernel time slicing across all physical and logical cores                                       |
+| **System Memory (RAM)**        | DDR4, DDR5, LPDDR5, Unified Memory                                      | Direct operating system physical memory allocation mapping                                                 |
+| **Discrete Graphics (dGPU)**   | NVIDIA GeForce / RTX / Quadro, AMD Radeon (RDNA / GCN), Intel Arc        | Native vendor telemetry pipelines (NVML, AMD ADL, Intel IGCL) with universal WDDM / DXGI engine fallback    |
+| **Integrated Graphics (iGPU)** | Intel UHD / Iris Xe, AMD Radeon APUs, Qualcomm Adreno (Snapdragon)      | Universal Windows display driver scheduler metrics (WDDM) with direct dedicated/shared video memory budgeting |
+| **Network Interfaces (NET)**   | Gigabit Ethernet, 2.5GbE/10GbE, Wi-Fi 6/6E/7                            | Physical interface evaluation with virtual, WSL, bridge, and VPN filtering                                 |
+| **Multi-GPU Systems**          | Simultaneous side-by-side multi-adapter monitoring                      | Configurable `gpu_index` targeting (`0`, `0, 1`, `all`) with display topology mapping & battery guard     |
 
 ---
 
@@ -138,7 +146,7 @@ The following performance benchmarks reflect active execution traces on Windows 
 | **Resident Working Set**     | ~4.5 MB in Task Manager   | Minimal memory allocation; zero dynamic bloat over time            |
 | **Sampling Execution Cycle** | ~8.2 ms per 1,000 ms tick | Active CPU duty cycle under 0.85%; sleeps 99.15% of the time       |
 | **Static State Rendering**   | 0.00% CPU duty cycle      | Completely bypasses rasterization when telemetry data is unchanged |
-| **Standalone Binary Size**   | ~208 KB                   | Single executable with embedded icons and Per-Monitor V2 manifest  |
+| **Standalone Binary Size**   | ~240 KB                   | Single executable with embedded icons and Per-Monitor V2 manifest  |
 
 ---
 
@@ -146,12 +154,10 @@ The following performance benchmarks reflect active execution traces on Windows 
 
 BareStats is engineered to guarantee full compatibility and zero ban risk alongside modern kernel-level anti-cheat solutions, including **Riot Vanguard**, **Easy Anti-Cheat (EAC)**, **BattlEye**, and **Call of Duty Ricochet**.
 
-- **Zero Kernel Drivers:** BareStats loads no `.sys` drivers and opens zero device handles to vulnerable third-party driver symlinks.
-- **Zero Process Injection:** BareStats never calls `CreateRemoteThread`, `VirtualAllocEx`, or `WriteProcessMemory`.
-- **Zero API Hooking:** BareStats does not hook game swapchains or intercept graphics presentation APIs (unlike traditional OSD injectors).
-- **Zero Foreign Process Inspection:** BareStats never opens foreign process descriptors with `PROCESS_VM_READ` or scans running task memory.
-- **Pure Top-Level Desktop Layer:** Rendered as an independent Win32 top-level layered window (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST`). Operating system input passes directly to underlying fullscreen borderless applications without interception.
-- **Zero Remote Data Collection (100% Offline):** BareStats is strictly a local hardware sampler. It establishes zero outbound network sockets, bundles zero telemetry or analytics SDKs, and never transmits usage metrics, hardware IDs, or system information to remote servers. All telemetry remains in local user-mode memory.
+- **Zero Kernel Drivers:** Operates 100% in unprivileged user mode; never drops or loads `.sys` kernel drivers or opens raw driver device symlinks.
+- **Zero Process Injection & Hooking:** Unlike traditional on-screen display injectors (e.g., RTSS), BareStats never injects DLLs into foreign processes, never hooks DirectX or Vulkan presentation swapchains, and never reads game memory.
+- **Pure Desktop Window Layer:** Rendered as an independent click-through Win32 layered surface with hardware alpha compositing. All operating system input passes directly to underlying fullscreen borderless applications without interception.
+- **Air-Gapped Local Telemetry (Zero Network Sockets):** Runs strictly offline with zero outbound network traffic, telemetry SDKs, or analytics reporting. All metrics remain exclusively in local user-mode memory.
 
 ---
 
@@ -205,8 +211,17 @@ opacity = 100
 # Polling interval in milliseconds (suspends automatically when display sleeps)
 refresh_interval_ms = 1000
 
-# Target GPU device index (0 = primary/discrete GPU, 1 = secondary/integrated GPU)
+# Selected GPU device index:
+#   0 (default) = Primary display adapter (GPU driving the primary desktop display)
+#   1           = Secondary adapter (e.g. discrete rendering GPU or secondary display adapter)
+#   0, 1        = Simultaneous side-by-side multi-GPU monitoring (e.g. │ GPU0 ... │ GPU1 ... │)
+#   all         = Monitor all discovered physical GPUs simultaneously
 gpu_index = 0
+
+# VRAM capacity reporting mode:
+#   physical (default) = Gross hardware silicon capacity (e.g. 16.0 GB), matching retail packaging and Task Manager
+#   usable             = Net allocatable capacity excluding driver reservations (e.g. 15.6 GB, AI/CUDA OOM guard)
+vram_mode = physical
 
 # Metric segment display ordering (comma-separated list of CPU, GPU, RAM, NET)
 order = CPU, GPU, RAM, NET
@@ -231,7 +246,7 @@ Consult [`config.example.ini`](config.example.ini) for full documentation of eve
 
 ## Known Constraints & Intentional Trade-Offs
 
-1. **CPU Temperature Omission:** Windows provides no native user-mode API for core CPU package thermals. Traditional tools obtain CPU thermals by installing third-party ring-0 kernel drivers (`WinRing0.sys`) that execute privileged MSR instructions (`rdmsr`). Because these drivers present severe security vulnerabilities (arbitrary kernel read/write) and are actively blacklisted by anti-cheat software, BareStats intentionally omits CPU core temperatures to preserve zero-driver safety.
+1. **CPU Temperature Omission:** Windows provides no native unprivileged user-mode API for CPU package thermals. Conventional tools achieve this by bundling vulnerable ring-0 kernel drivers (e.g. `WinRing0`) to execute privileged Model-Specific Register (MSR) instructions. Because these third-party drivers expose severe kernel read/write vulnerabilities and are actively blacklisted by modern anti-cheat systems, BareStats intentionally operates strictly in user space to guarantee system stability and anti-cheat compliance.
 2. **Sub-1GB Memory Formatting:** Integrated GPU shared memory segments that report below 1 GB (e.g., dynamic 128 MB or 512 MB boot allocations) automatically scale to integer megabytes (`MB`) rather than truncating to `0.0GB`.
 3. **Exclusive Fullscreen Mode:** Like all native Windows layered desktop surfaces, BareStats renders above desktop windows and **Borderless Windowed** applications. Traditional exclusive fullscreen mode grants games direct scan-out access to the display hardware; running games in Borderless Windowed mode allows the overlay to remain persistently visible on top.
 
@@ -265,7 +280,7 @@ cmake -B build -S . -G "Ninja" -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
-The build produces a single standalone executable (`build/BareStats.exe`, ~208 KB) with embedded multi-resolution icon resources and Per-Monitor V2 DPI manifests.
+The build produces a single standalone executable (`build/BareStats.exe`, ~240 KB) with embedded multi-resolution icon resources and Per-Monitor V2 DPI manifests.
 
 ### Automated Diagnostics Suite
 
@@ -290,12 +305,14 @@ Every automated CI run executes the comprehensive diagnostic benchmark suite bef
 
 ## Future Architecture & Platform Roadmap
 
-While v1.0 is targeted strictly at delivering a production-grade Windows implementation, future major revisions are planned around native multi-platform interfaces and expanded accelerator hardware:
+BareStats evolves along a structured architectural roadmap from deep native Windows telemetry to universal cross-platform execution:
 
-- **v1.1 (Deep Windows Hardware Extensions):** Native AMD ADL SDK integration (`atiadlxx.dll`) and Intel IGCL (`ControlLib.dll`) for fan speed, temperature, and power profiling on non-NVIDIA silicon; simultaneous side-by-side multi-GPU monitoring.
-- **v1.2 (Linux Native Port):** Wayland overlay protocol (`wlr-layer-shell`) and X11 (`XComposite`) interfaces backed by `/proc` and `sysfs` telemetry ingestion.
-- **v1.3 (macOS Native Port):** Menu bar status widget implemented in AppKit and Metal, leveraging Mach kernel APIs and Apple Silicon IOKit accelerators.
+- **v1.0 (Production Core — Completed):** Native unprivileged CPU, memory, NVIDIA GPU, and network throughput overlay with DWM alpha compositing and 0.00% idle dirty-frame bypasses.
+- **v1.1 (Deep Windows Hardware Extensions & Precision VRAM — Completed):** Precision VRAM decoupling (`vram_mode`), native AMD ADL SDK (`atiadlxx.dll`), Intel IGCL (`ControlLib.dll`), universal Windows D3DKMT kernel engine scheduler fallback (`D3DKMTQueryStatistics`), and simultaneous side-by-side multi-GPU monitoring.
+- **v1.2 (Linux Native Port):** Wayland overlay protocol (`wlr-layer-shell`) and X11 (`XComposite`) interfaces backed by `/proc` and `sysfs` Direct Rendering Manager (`/sys/class/drm`) telemetry ingestion.
+- **v1.3 (macOS Native Port):** Menu bar status widget implemented in AppKit and Metal, leveraging Mach kernel APIs and Apple Silicon `IOKit` accelerators.
 - **v1.4 (Specialized AI & Domestic Accelerators on Linux):** Dedicated telemetry connectors for Linux enterprise accelerator stacks, including Moore Threads (MUSA SDK), Huawei Ascend (CANN toolkit), Biren Technology (BI-SDK), and emerging accelerator drivers.
+- **v2.0 (Unified Cross-Platform Core):** Consolidation of Windows, Linux, and macOS implementations into a single unified telemetry abstraction engine.
 
 ---
 

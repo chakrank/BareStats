@@ -624,6 +624,15 @@ void OverlayWindow::TriggerLaunchAnimation(const SystemMetrics& targetMetrics) {
     if (zeroMetrics.gpu.fanRpm.has_value()) zeroMetrics.gpu.fanRpm = 0;
     if (zeroMetrics.gpu.fanSpeedPercent.has_value()) zeroMetrics.gpu.fanSpeedPercent = 0;
 
+    for (auto& g : zeroMetrics.gpus) {
+        if (g.utilizationPercent.has_value()) g.utilizationPercent = 0.0;
+        g.memoryUsedBytes = 0;
+        if (g.temperatureC.has_value()) g.temperatureC = 0;
+        if (g.powerWatts.has_value()) g.powerWatts = 0;
+        if (g.fanRpm.has_value()) g.fanRpm = 0;
+        if (g.fanSpeedPercent.has_value()) g.fanSpeedPercent = 0;
+    }
+
     zeroMetrics.memory.usedBytes = 0;
     // Keep max static! (zeroMetrics.memory.totalBytes untouched)
 

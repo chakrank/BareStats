@@ -123,8 +123,13 @@ static bool CreateDefaultConfigFile(const std::string& iniPath, const AppConfig&
         << "[Telemetry]\n"
         << "# Update interval in milliseconds\n"
         << "refresh_interval_ms = " << config.refreshIntervalMs << "\n\n"
-        << "# Selected GPU device index (0 = primary/discrete GPU, 1 = secondary/integrated GPU)\n"
-        << "gpu_index = " << config.gpuIndex << "\n\n"
+        << "# Selected GPU target index: single (0 = primary display adapter), multi (0, 1), or all (all)\n"
+        << "# Note: GPU 0 is the primary display GPU (can be iGPU or dGPU depending on monitor connection).\n"
+        << "gpu_index = " << (config.gpuTarget.empty() ? std::to_string(config.gpuIndex) : config.gpuTarget) << "\n\n"
+        << "# VRAM capacity reporting mode:\n"
+        << "#   physical = Gross hardware silicon capacity (e.g. 16.0 GB, matches retail box & Task Manager)\n"
+        << "#   usable   = Net allocatable capacity excluding driver reservations (e.g. 15.6 GB, AI/CUDA OOM guard)\n"
+        << "vram_mode = " << (config.vramMode == VramMode::Usable ? "usable" : "physical") << "\n\n"
         << "# Metric segment display ordering (comma-separated: CPU, GPU, RAM)\n"
         << "order = " << JoinMetricOrder(config.metricOrder) << "\n\n"
         << "# Toggle specific metrics (1 = show, 0 = hide)\n"
@@ -302,8 +307,54 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
     config.refreshIntervalMs = static_cast<uint32_t>(GetPrivateProfileIntA("Telemetry", "refresh_interval_ms", config.refreshIntervalMs, iniPath.c_str()));
     if (config.refreshIntervalMs < 100) config.refreshIntervalMs = 1000;
 
-    config.gpuIndex = GetPrivateProfileIntA("Telemetry", "gpu_index", config.gpuIndex, iniPath.c_str());
-    if (config.gpuIndex < 0) config.gpuIndex = 0;
+    char gpuTargetBuf[64] = {0};
+    GetPrivateProfileStringA("Telemetry", "gpu_index", "0", gpuTargetBuf, sizeof(gpuTargetBuf), iniPath.c_str());
+    std::string gpuTargetStr(gpuTargetBuf);
+    size_t gFirst = gpuTargetStr.find_first_not_of(" \t\r\n");
+    size_t gLast = gpuTargetStr.find_last_not_of(" \t\r\n");
+    if (gFirst != std::string::npos && gLast != std::string::npos) {
+        gpuTargetStr = gpuTargetStr.substr(gFirst, gLast - gFirst + 1);
+    }
+    config.gpuTarget = gpuTargetStr;
+
+    std::string lowerTarget = gpuTargetStr;
+    for (char& c : lowerTarget) c = static_cast<char>(tolower(c));
+
+    config.targetGpuIndices.clear();
+    if (lowerTarget == "all") {
+        config.targetAllGpus = true;
+        config.gpuIndex = 0;
+    } else {
+        config.targetAllGpus = false;
+        std::stringstream ssGpu(gpuTargetStr);
+        std::string token;
+        while (std::getline(ssGpu, token, ',')) {
+            size_t tFirst = token.find_first_not_of(" \t\r\n");
+            size_t tLast = token.find_last_not_of(" \t\r\n");
+            if (tFirst != std::string::npos && tLast != std::string::npos) {
+                try {
+                    int idx = std::stoi(token.substr(tFirst, tLast - tFirst + 1));
+                    if (idx >= 0) {
+                        config.targetGpuIndices.push_back(static_cast<uint32_t>(idx));
+                    }
+                } catch (...) {}
+            }
+        }
+        if (config.targetGpuIndices.empty()) {
+            config.targetGpuIndices.push_back(0);
+        }
+        config.gpuIndex = static_cast<int>(config.targetGpuIndices[0]);
+    }
+
+    char vramBuf[32] = {0};
+    GetPrivateProfileStringA("Telemetry", "vram_mode", "physical", vramBuf, sizeof(vramBuf), iniPath.c_str());
+    std::string vramStr(vramBuf);
+    for (char& c : vramStr) c = static_cast<char>(tolower(c));
+    if (vramStr == "usable") {
+        config.vramMode = VramMode::Usable;
+    } else {
+        config.vramMode = VramMode::Physical;
+    }
 
     // Metric ordering
     char orderBuf[128] = {0};
@@ -383,7 +434,8 @@ bool ConfigManager::Save(const std::string& iniPath, const AppConfig& config) {
     WritePrivateProfileStringA("Appearance", "opacity", std::to_string(config.opacity).c_str(), iniPath.c_str());
 
     WritePrivateProfileStringA("Telemetry", "refresh_interval_ms", std::to_string(config.refreshIntervalMs).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Telemetry", "gpu_index", std::to_string(config.gpuIndex).c_str(), iniPath.c_str());
+    WritePrivateProfileStringA("Telemetry", "gpu_index", config.gpuTarget.empty() ? std::to_string(config.gpuIndex).c_str() : config.gpuTarget.c_str(), iniPath.c_str());
+    WritePrivateProfileStringA("Telemetry", "vram_mode", config.vramMode == VramMode::Usable ? "usable" : "physical", iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "order", JoinMetricOrder(config.metricOrder).c_str(), iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_cpu", config.showCpu ? "1" : "0", iniPath.c_str());
     WritePrivateProfileStringA("Telemetry", "show_gpu", config.showGpu ? "1" : "0", iniPath.c_str());

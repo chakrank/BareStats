@@ -44,7 +44,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     // Support --test or --cli for verification
     if (fullCmd.find(L"--test") != std::wstring::npos || fullCmd.find(L"--cli") != std::wstring::npos) {
-        OutputToConsole("\nBareStats CLI Verification (v1.0.0)\n");
+        OutputToConsole("\nBareStats CLI Verification (v1.1.0)\n");
         OutputToConsole("Initializing telemetry collectors...\n");
 
         std::string configPath = ConfigManager::GetDefaultConfigPath();
@@ -62,7 +62,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                                      (g.vendorId == 0x8086) ? "Intel" :
                                      (g.vendorId == 0x1002) ? "AMD" :
                                      (g.vendorId == 0x5143) ? "Qualcomm" : "Generic";
-            std::string targetTag = (static_cast<int>(g.index) == config.gpuIndex) ? " [Active Target]" : "";
+            bool isTarget = config.targetAllGpus ||
+                (std::find(config.targetGpuIndices.begin(), config.targetGpuIndices.end(), g.index) != config.targetGpuIndices.end());
+            std::string targetTag = isTarget ? " [Active Target]" : "";
             OutputToConsole("  [GPU " + std::to_string(g.index) + "] " + g.name + " (" + vendorName + ", " +
                 std::to_string(g.dedicatedVideoMemory / (1024 * 1024)) + "MB VRAM)" + targetTag + "\n");
         }
@@ -92,7 +94,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             auto t1 = std::chrono::high_resolution_clock::now();
             metrics.memory = memoryCollector.Collect();
             auto t2 = std::chrono::high_resolution_clock::now();
-            metrics.gpu = gpuCollector.Collect(config.gpuIndex);
+            metrics.gpus = gpuCollector.CollectMultiple(config.targetGpuIndices, config.targetAllGpus);
+            if (!metrics.gpus.empty()) {
+                metrics.gpu = metrics.gpus[0];
+            }
             auto t3 = std::chrono::high_resolution_clock::now();
             metrics.network = networkCollector.Collect();
             auto t4 = std::chrono::high_resolution_clock::now();
@@ -114,6 +119,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                         " | TDP Limit: " + (metrics.gpu.powerLimitWatts.has_value() ? std::to_string(*metrics.gpu.powerLimitWatts) + "W" : "N/A") +
                         " | Slowdown Temp: " + (metrics.gpu.tempSlowdownLimitC.has_value() ? std::to_string(*metrics.gpu.tempSlowdownLimitC) + "C" : "N/A") + "\n";
                     OutputToConsole(gpuInfo);
+
+                    std::string vramModeStr = (config.vramMode == VramMode::Usable) ? "usable" : "physical";
+                    uint64_t usableBytes = (metrics.gpu.memoryTotalBytes > metrics.gpu.memoryReservedBytes) 
+                        ? (metrics.gpu.memoryTotalBytes - metrics.gpu.memoryReservedBytes) 
+                        : metrics.gpu.memoryTotalBytes;
+                    std::string vramInfo = "  [VRAM Mode: " + vramModeStr + "] Total: " + 
+                        std::to_string(metrics.gpu.memoryTotalBytes / (1024 * 1024)) + "MB | Reserved: " + 
+                        std::to_string(metrics.gpu.memoryReservedBytes / (1024 * 1024)) + "MB | Usable: " + 
+                        std::to_string(usableBytes / (1024 * 1024)) + "MB\n";
+                    OutputToConsole(vramInfo);
                 }
                 if (metrics.network.isAvailable) {
                     std::string netInfo = "  [Network Details] Primary Adapter: " + WideToUtf8Str(metrics.network.primaryAdapter) + "\n";

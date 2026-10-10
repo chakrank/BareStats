@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(BareStats VERSION 1.0.0 LANGUAGES CXX)
+project(BareStats VERSION 1.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +17,9 @@ set(SOURCES
     src/metrics/cpu_collector.cpp
     src/metrics/memory_collector.cpp
     src/metrics/nvml_collector.cpp
+    src/metrics/adl_collector.cpp
+    src/metrics/igcl_collector.cpp
+    src/metrics/d3dkmt_collector.cpp
     src/metrics/gpu_collector.cpp
     src/metrics/network_collector.cpp
     src/metrics/telemetry_engine.cpp
@@ -34,6 +37,9 @@ set(HEADERS
     src/metrics/cpu_collector.h
     src/metrics/memory_collector.h
     src/metrics/nvml_collector.h
+    src/metrics/adl_collector.h
+    src/metrics/igcl_collector.h
+    src/metrics/d3dkmt_collector.h
     src/metrics/gpu_collector.h
     src/metrics/network_collector.h
     src/metrics/telemetry_engine.h
@@ -64,3 +70,49 @@ add_custom_command(TARGET BareStats POST_BUILD
     "${CMAKE_CURRENT_SOURCE_DIR}/config.example.ini"
     "$<TARGET_FILE_DIR:BareStats>/config.example.ini"
 )
+
+option(BARESTATS_BUILD_TESTS "Build BareStats automated verification test suite and driver mocks" ON)
+
+if (BARESTATS_BUILD_TESTS)
+    enable_testing()
+
+    # Synthetic Driver Mocks for Hardware-Agnostic Validation
+    add_library(mock_nvml SHARED tests/mocks/mock_nvml.cpp)
+    set_target_properties(mock_nvml PROPERTIES PREFIX "")
+
+    add_library(mock_atiadlxx SHARED tests/mocks/mock_atiadlxx.cpp)
+    set_target_properties(mock_atiadlxx PROPERTIES PREFIX "")
+
+    add_library(mock_ControlLib SHARED tests/mocks/mock_ControlLib.cpp)
+    set_target_properties(mock_ControlLib PROPERTIES PREFIX "")
+
+    set(TEST_SOURCES
+        tests/test_suite.cpp
+        src/metrics/cpu_collector.cpp
+        src/metrics/memory_collector.cpp
+        src/metrics/network_collector.cpp
+        src/metrics/d3dkmt_collector.cpp
+        src/metrics/nvml_collector.cpp
+        src/metrics/adl_collector.cpp
+        src/metrics/igcl_collector.cpp
+        src/metrics/gpu_collector.cpp
+        src/config/config.cpp
+        src/overlay/monitor_helper.cpp
+        src/util/formatter.cpp
+    )
+
+    add_executable(BareStatsTests ${TEST_SOURCES})
+
+    target_link_libraries(BareStatsTests PRIVATE
+        dxgi
+        gdi32
+        user32
+        iphlpapi
+        ws2_32
+    )
+
+    add_dependencies(BareStatsTests mock_nvml mock_atiadlxx mock_ControlLib)
+
+    add_test(NAME AutomatedVerification COMMAND BareStatsTests)
+endif()
+

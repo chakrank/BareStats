@@ -15,7 +15,12 @@ SystemMetrics TelemetryEngine::CollectImmediate() {
     SystemMetrics metrics;
     if (config_.showCpu) metrics.cpu = cpuCollector_.Collect();
     if (config_.showRam) metrics.memory = memoryCollector_.Collect();
-    if (config_.showGpu) metrics.gpu = gpuCollector_.Collect(config_.gpuIndex);
+    if (config_.showGpu) {
+        metrics.gpus = gpuCollector_.CollectMultiple(config_.targetGpuIndices, config_.targetAllGpus);
+        if (!metrics.gpus.empty()) {
+            metrics.gpu = metrics.gpus[0];
+        }
+    }
     if (config_.showNet) metrics.network = netCollector_.Collect();
     {
         std::lock_guard<std::mutex> lock(metricsMutex_);
@@ -93,7 +98,12 @@ void TelemetryEngine::WorkerLoop() {
             SystemMetrics sample;
             if (config_.showCpu) sample.cpu = cpuCollector_.Collect();
             if (config_.showRam) sample.memory = memoryCollector_.Collect();
-            if (config_.showGpu) sample.gpu = gpuCollector_.Collect(config_.gpuIndex);
+            if (config_.showGpu) {
+                sample.gpus = gpuCollector_.CollectMultiple(config_.targetGpuIndices, config_.targetAllGpus);
+                if (!sample.gpus.empty()) {
+                    sample.gpu = sample.gpus[0];
+                }
+            }
             if (config_.showNet) sample.network = netCollector_.Collect();
 
             {

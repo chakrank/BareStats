@@ -8,16 +8,18 @@ namespace BareStats {
 
 class NvmlCollector {
 public:
-    NvmlCollector();
+    explicit NvmlCollector(const char* customDllPath = nullptr);
     ~NvmlCollector();
 
     bool IsAvailable() const { return isAvailable_; }
     bool Collect(GpuMetrics& metrics, uint32_t deviceIndex = 0);
     bool Recover();
     void Shutdown();
+    bool LoadNvml(const char* customDllPath = nullptr);
 
 private:
     HMODULE nvmlDll_ = nullptr;
+    std::string customDllPath_;
     bool isAvailable_ = false;
     void* deviceHandle_ = nullptr;
     uint32_t activeDeviceIndex_ = 0xFFFFFFFF;
@@ -30,6 +32,7 @@ private:
     typedef int (*nvmlDeviceGetName_t)(void*, char*, unsigned int);
     typedef int (*nvmlDeviceGetUtilizationRates_t)(void*, void*);
     typedef int (*nvmlDeviceGetMemoryInfo_t)(void*, void*);
+    typedef int (*nvmlDeviceGetMemoryInfo_v2_t)(void*, void*);
     typedef int (*nvmlDeviceGetTemperature_t)(void*, int, unsigned int*);
     typedef int (*nvmlDeviceGetPowerUsage_t)(void*, unsigned int*);
     typedef int (*nvmlDeviceGetFanSpeed_t)(void*, unsigned int*);
@@ -45,6 +48,7 @@ private:
     nvmlDeviceGetName_t fnNvmlDeviceGetName_ = nullptr;
     nvmlDeviceGetUtilizationRates_t fnNvmlDeviceGetUtilizationRates_ = nullptr;
     nvmlDeviceGetMemoryInfo_t fnNvmlDeviceGetMemoryInfo_ = nullptr;
+    nvmlDeviceGetMemoryInfo_v2_t fnNvmlDeviceGetMemoryInfo_v2_ = nullptr;
     nvmlDeviceGetTemperature_t fnNvmlDeviceGetTemperature_ = nullptr;
     nvmlDeviceGetPowerUsage_t fnNvmlDeviceGetPowerUsage_ = nullptr;
     nvmlDeviceGetFanSpeed_t fnNvmlDeviceGetFanSpeed_ = nullptr;

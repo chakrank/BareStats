@@ -41,6 +41,11 @@ jobs:
         run: |
           build\BareStats.exe --test
 
+      - name: Execute Hardware-Agnostic Test Suite
+        shell: cmd
+        run: |
+          ctest --test-dir build --output-on-failure
+
       - name: Generate SHA-256 Checksum
         shell: powershell
         run: |
@@ -56,4 +61,5 @@ jobs:
           path: |
             build/BareStats.exe
             build/BareStats.exe.sha256
+            build/BareStatsTests.exe
           if-no-files-found: error

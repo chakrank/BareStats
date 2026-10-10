@@ -7,6 +7,11 @@
 
 namespace BareStats {
 
+enum class VramMode {
+    Physical, // Gross hardware silicon capacity (e.g. 16.0 GB, matches retail box & Task Manager)
+    Usable    // Net allocatable capacity excluding driver reservations (e.g. 15.6 GB, AI/CUDA OOM guard)
+};
+
 struct AppConfig {
     int monitorIndex = 0;
     PositionPreset preset = PositionPreset::BottomCenter;
@@ -31,6 +36,10 @@ struct AppConfig {
 
     uint32_t refreshIntervalMs = 1000;
     int gpuIndex = 0;                  // Target GPU device index (0 = primary/dGPU, 1 = secondary/iGPU)
+    std::string gpuTarget = "0";       // Multi-GPU target expression ("0", "0, 1", "all")
+    std::vector<uint32_t> targetGpuIndices = { 0 };
+    bool targetAllGpus = false;
+    VramMode vramMode = VramMode::Physical; // VRAM reporting mode (physical vs usable)
     std::vector<std::string> metricOrder = { "CPU", "GPU", "RAM", "NET" }; // Metric display ordering
 
     bool showCpu = true;
