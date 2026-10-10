@@ -137,6 +137,25 @@ struct NetworkCollector::Impl {
             }
         }
 
+        // If no physical adapter was found (e.g. running inside Azure VM, Hyper-V, or virtualized CI),
+        // fallback to the active default gateway adapter or primary operational interface
+        if (!foundPhysical) {
+            for (ULONG i = 0; i < pTable->NumEntries; ++i) {
+                const MIB_IF_ROW2& row = pTable->Table[i];
+                if (row.OperStatus == IfOperStatusUp && row.Type != IF_TYPE_SOFTWARE_LOOPBACK && !row.InterfaceAndOperStatusFlags.FilterInterface) {
+                    if (row.InterfaceIndex == bestIndex || !foundPhysical) {
+                        foundPhysical = true;
+                        totalIn = row.InOctets;
+                        totalOut = row.OutOctets;
+                        primaryName = (row.Alias[0] != L'\0') ? row.Alias : row.Description;
+                        if (row.InterfaceIndex == bestIndex) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         FreeMibTable(pTable);
 
         if (!foundPhysical) {
