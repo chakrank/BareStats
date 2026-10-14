@@ -44,10 +44,14 @@ public:
     // Wake worker thread immediately to pick up configuration updates
     void Wake();
 
+    // Hot-update telemetry configuration
+    void UpdateConfig(const AppConfig& config);
+
 private:
     void WorkerLoop();
 
-    const AppConfig& config_;
+    AppConfig config_;
+    std::mutex configMutex_;
     CpuCollector cpuCollector_;
     MemoryCollector memoryCollector_;
     GpuCollector gpuCollector_;

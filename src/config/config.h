@@ -4,8 +4,55 @@
 #include <windows.h>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 namespace BareStats {
+
+enum class OverlayLayout {
+    Horizontal, // Single-line horizontal ribbon (default)
+    Grid,       // Multi-row compact widget layout
+    CustomGrid  // User-defined mathematical matrix grid with arbitrary cell placement & colspans
+};
+
+enum class GridMode {
+    Unified, // Single compact layered window (default, ultra-low memory for compact matrix)
+    Islands  // Multi-window / distributed micro-HWNDs (zero overhead across large gaps & multi-monitors)
+};
+
+struct GridCell {
+    std::string token;  // "cpu", "ram", "gpu0", "net", etc. (empty string for null/empty slots)
+    int colIndex = 0;   // 0-based column start index
+    int colSpan = 1;    // number of columns spanned
+};
+
+struct GridRow {
+    std::vector<GridCell> cells;
+};
+
+struct CustomGridDefinition {
+    int numCols = 0;
+    int numRows = 0;
+    std::vector<GridRow> rows;
+    bool IsEmpty() const {
+        if (rows.empty()) return true;
+        for (const auto& r : rows) {
+            for (const auto& c : r.cells) {
+                if (!c.token.empty()) return false;
+            }
+        }
+        return true;
+    }
+};
+
+struct PerGpuConfig {
+    bool enabled = true;
+    bool showUtil = true;
+    bool showVram = true;
+    bool showTemp = true;
+    bool showPower = true;
+    bool showFan = true;
+    std::string label; // Custom label override (e.g. "RTX4090"). If empty, default "GPU" or "GPU0" is used.
+};
 
 enum class VramMode {
     Physical, // Gross hardware silicon capacity (e.g. 16.0 GB, matches retail box & Task Manager)
@@ -51,10 +98,37 @@ struct AppConfig {
     bool showGpuFan = true;
     bool showMaxMemory = true;         // If false, shows only current (e.g. 11.7GB instead of 11.7/16GB)
     bool hideOfflineMetrics = false;   // If true, completely hides subsystems that are offline/unavailable
+
+    OverlayLayout layout = OverlayLayout::Horizontal; // Presentation layout (Horizontal vs Grid vs CustomGrid)
+    GridMode gridMode = GridMode::Unified;            // Unified window vs Islands micro-HWNDs
+    int cellGap = 16;                                 // Column gap in pixels for CustomGrid
+    int rowGap = 4;                                   // Row gap in pixels for CustomGrid
+    CustomGridDefinition customGrid;                  // Parsed matrix grid definition
+    int maxGpusPerRow = 2;                            // Max GPUs rendered per row in Grid mode or multi-GPU wrapping
+    std::unordered_map<uint32_t, PerGpuConfig> perGpuConfigs;
+
+    PerGpuConfig GetGpuConfig(uint32_t adapterIndex) const {
+        auto it = perGpuConfigs.find(adapterIndex);
+        if (it != perGpuConfigs.end()) {
+            return it->second;
+        }
+        PerGpuConfig def;
+        def.showUtil = true;
+        def.showVram = true;
+        def.showTemp = showGpuTemp;
+        def.showPower = showGpuPower;
+        def.showFan = showGpuFan;
+        return def;
+    }
 };
+
+// Schema versioning: MAJOR * 100 + MINOR * 10 (e.g. v1.0 = 100, v1.1 = 110, v1.2 = 120, v1.3 = 130)
+constexpr int CURRENT_CONFIG_SCHEMA_VERSION = 120;
 
 class ConfigManager {
 public:
+    static bool CreateDefaultConfigFile(const std::string& iniPath, const AppConfig& config = AppConfig());
+    static bool MigrateSchema(const std::string& iniPath, int oldVersion, int newVersion);
     static AppConfig Load(const std::string& iniPath);
     static bool Save(const std::string& iniPath, const AppConfig& config);
     static std::string GetDefaultConfigPath();

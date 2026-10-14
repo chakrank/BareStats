@@ -3,7 +3,7 @@
 > **An ultra-lightweight, zero-overhead native system telemetry overlay for Windows.**
 
 [![CI Matrix](https://github.com/chakrank/BareStats/actions/workflows/ci.yml/badge.svg)](https://github.com/chakrank/BareStats/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/Release-v1.1.0-blue.svg)](https://github.com/chakrank/BareStats/releases)
+[![Release](https://img.shields.io/badge/Release-v1.2.0-blue.svg)](https://github.com/chakrank/BareStats/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ---
@@ -49,7 +49,7 @@ Heavyweight traditional tools and Electron-based dashboards introduce substantia
 
 BareStats eliminates these liabilities through an unprivileged, event-driven systems architecture built in native C++17 and unmanaged Win32. By decoupling hardware sampling onto a dedicated background worker, it directly interfaces with universal Windows display driver scheduling (WDDM / DXGI), unprivileged OS performance counters, native vendor telemetry pipelines (NVIDIA NVML, AMD ADL, and Intel IGCL), and Windows IP Helper tables, offloading presentation directly to the Desktop Window Manager (DWM) via hardware alpha compositing.
 
-With v1.1, BareStats introduces precision VRAM decoupling (`vram_mode`) that isolates static driver/firmware carve-outs from active application allocations to prevent CUDA Out of Memory (OOM) errors during local LLM model loading (Ollama, PyTorch, vLLM), native telemetry for AMD Radeon and Intel Arc silicon, universal graphics engine load tracking for integrated graphics and Qualcomm Snapdragon X Elite (ARM64), and simultaneous side-by-side multi-GPU monitoring.
+With v1.1 and v1.2, BareStats introduces a true mathematical matrix grid engine (`layout = custom_grid`), an isolated component island micro-HWND presentation architecture (`grid_mode = islands`) for zero-overhead distributed overlays across wide desktop canvases, multi-GPU grid wrapping (`max_gpus_per_row`), asymmetric per-adapter sensor controls (`[GPU0]`, `[GPU1]`), hardware auto-introspection with zero-loss schema migration, precision VRAM decoupling (`vram_mode`) that isolates static driver/firmware carve-outs from active application allocations, native telemetry for AMD Radeon and Intel Arc silicon, universal graphics engine load tracking for integrated graphics and Qualcomm Snapdragon X Elite (ARM64), and simultaneous side-by-side multi-GPU monitoring.
 
 The result is a persistent, transparent single-line status bar delivering live CPU, multi-GPU, VRAM, RAM, and network throughput at an observed resident working set of just **~4.5 MB** and true **0.00%** idle CPU consumption via sub-microsecond dirty-frame bypasses. Operating strictly as a non-invasive, click-through desktop overlay, BareStats never intercepts game or application input, preserves laptop battery life, and runs completely safe alongside competitive anti-cheat systems.
 
@@ -178,6 +178,10 @@ BareStats is engineered to guarantee full compatibility and zero ban risk alongs
 BareStats automatically provisions a default `config.ini` in its local directory (Portable Mode) or `%LOCALAPPDATA%\BareStats\` (Installed Mode). Changes saved in external editors apply instantly without restarting.
 
 ```ini
+[BareStats]
+# Configuration schema version (used for automated zero-overhead migrations)
+schema_version = 120
+
 [Position]
 # Target monitor display index (0 = primary monitor, 1 = secondary, etc.)
 monitor_index = 0
@@ -185,6 +189,24 @@ monitor_index = 0
 # Position preset: bottom-center, top-center, top-left, top-right, bottom-left, bottom-right, custom
 preset = bottom-center
 margin = 12
+
+# Layout geometry: horizontal (default), grid, or custom_grid
+layout = horizontal
+
+# Grid rendering engine mode (active when layout = custom_grid):
+# unified (default single compact window) or islands (distributed micro-HWNDs for large gaps & multi-monitors)
+grid_mode = unified
+cell_gap = 16
+row_gap = 4
+
+# Maximum GPUs displayed per row when layout = grid (default: 2)
+max_gpus_per_row = 2
+
+# Custom Matrix Grid rows (active when layout = custom_grid):
+# grid_row_1 = cpu  | .    | .    | ram
+# grid_row_2 = .    | .    | gpu0 | gpu0
+# grid_row_3 = gpu1 | gpu1 | gpu1 | gpu1
+# grid_row_4 = .    | net  | net  | net
 
 [Appearance]
 # Font face family ("auto" dynamically inherits Windows system UI font)
@@ -238,6 +260,16 @@ show_gpu_power = 1
 show_gpu_fan = 1
 show_max_memory = 1
 hide_offline_metrics = 0
+
+# Optional per-adapter overrides (e.g. detailed primary card, compact AI compute card)
+# [GPU0]
+# show_temp = 1
+# show_power = 1
+#
+# [GPU1]
+# show_temp = 1
+# show_power = 0
+# show_fan = 0
 ```
 
 Consult [`config.example.ini`](config.example.ini) for full documentation of every available parameter.
@@ -309,10 +341,11 @@ BareStats evolves along a structured architectural roadmap from deep native Wind
 
 - **v1.0 (Production Core — Completed):** Native unprivileged CPU, memory, NVIDIA GPU, and network throughput overlay with DWM alpha compositing and 0.00% idle dirty-frame bypasses.
 - **v1.1 (Deep Windows Hardware Extensions & Precision VRAM — Completed):** Precision VRAM decoupling (`vram_mode`), native AMD ADL SDK (`atiadlxx.dll`), Intel IGCL (`ControlLib.dll`), universal Windows D3DKMT kernel engine scheduler fallback (`D3DKMTQueryStatistics`), and simultaneous side-by-side multi-GPU monitoring.
-- **v1.2 (Linux Native Port):** Wayland overlay protocol (`wlr-layer-shell`) and X11 (`XComposite`) interfaces backed by `/proc` and `sysfs` Direct Rendering Manager (`/sys/class/drm`) telemetry ingestion.
-- **v1.3 (macOS Native Port):** Menu bar status widget implemented in AppKit and Metal, leveraging Mach kernel APIs and Apple Silicon `IOKit` accelerators.
-- **v1.4 (Specialized AI & Domestic Accelerators on Linux):** Dedicated telemetry connectors for Linux enterprise accelerator stacks, including Moore Threads (MUSA SDK), Huawei Ascend (CANN toolkit), Biren Technology (BI-SDK), and emerging accelerator drivers.
-- **v2.0 (Unified Cross-Platform Core):** Consolidation of Windows, Linux, and macOS implementations into a single unified telemetry abstraction engine.
+- **v1.2 (Multi-GPU Grid Architecture, Component Island Micro-HWNDs & Per-Adapter Customization — Completed):** User-configurable multi-row grid presentation (`layout = horizontal | grid | custom_grid`), true mathematical matrix grid layouts with cell merging, isolated component island micro-HWND presentation architecture (`grid_mode = islands`) with Win+D resilience, asymmetric per-adapter configuration (`[GPU0]`, `[GPU1]`), and transparent hardware auto-introspection with zero-loss schema migration.
+- **v1.3 (Linux Native Port):** Wayland overlay protocol (`wlr-layer-shell`) and X11 (`XComposite` / `XShape`) native window surfaces backed by unprivileged `/proc/stat`, `/proc/meminfo`, `/sys/class/hwmon`, and Direct Rendering Manager (`/sys/class/drm`) telemetry ingestion, paired directly with the platform-agnostic token formatter pipeline.
+- **v1.4 (macOS Native Port):** Floating status overlay and menu bar status widget implemented in AppKit and Metal, leveraging unprivileged Mach kernel APIs (`host_processor_info`, `vm_statistics64`) and Apple Silicon `IOKit` accelerators for unified GPU memory and engine telemetry.
+- **v1.5 (Specialized AI & Domestic Accelerators on Linux):** Dedicated telemetry connectors for Linux enterprise and domestic accelerator driver stacks, including Moore Threads (MUSA SDK), Huawei Ascend (CANN toolkit), Biren Technology (BI-SDK), and emerging accelerator drivers.
+- **v2.0 (Unified Cross-Platform Core):** Consolidation of Windows, Linux, and macOS implementations into a single unified telemetry abstraction engine sharing 100% of telemetry models, formatting, and configuration parsing.
 
 ---
 

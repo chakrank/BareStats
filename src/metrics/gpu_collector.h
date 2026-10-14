@@ -37,7 +37,7 @@ public:
     void Recover();
     void Shutdown();
 
-    std::vector<GpuDeviceInfo> GetAvailableGpus();
+    static std::vector<GpuDeviceInfo> GetAvailableGpus();
 
 private:
     NvmlCollector nvmlCollector_;

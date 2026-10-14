@@ -44,7 +44,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     // Support --test or --cli for verification
     if (fullCmd.find(L"--test") != std::wstring::npos || fullCmd.find(L"--cli") != std::wstring::npos) {
-        OutputToConsole("\nBareStats CLI Verification (v1.1.0)\n");
+        OutputToConsole("\nBareStats CLI Verification (v1.2.0)\n");
         OutputToConsole("Initializing telemetry collectors...\n");
 
         std::string configPath = ConfigManager::GetDefaultConfigPath();
@@ -208,9 +208,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         overlay.UpdateMetrics(metrics);
     });
 
-    // Connect config reload callback to wake telemetry engine immediately
-    overlay.SetConfigReloadCallback([&telemetryEngine]() {
-        telemetryEngine.Wake();
+    // Connect config reload callback to wake telemetry engine immediately with new config
+    overlay.SetConfigReloadCallback([&overlay, &telemetryEngine]() {
+        telemetryEngine.UpdateConfig(overlay.GetConfig());
     });
 
     // Start background configuration file watcher for live zero-restart hot reloading

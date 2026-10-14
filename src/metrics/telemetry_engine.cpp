@@ -12,16 +12,22 @@ TelemetryEngine::~TelemetryEngine() {
 }
 
 SystemMetrics TelemetryEngine::CollectImmediate() {
+    AppConfig cfg;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        cfg = config_;
+    }
+
     SystemMetrics metrics;
-    if (config_.showCpu) metrics.cpu = cpuCollector_.Collect();
-    if (config_.showRam) metrics.memory = memoryCollector_.Collect();
-    if (config_.showGpu) {
-        metrics.gpus = gpuCollector_.CollectMultiple(config_.targetGpuIndices, config_.targetAllGpus);
+    if (cfg.showCpu) metrics.cpu = cpuCollector_.Collect();
+    if (cfg.showRam) metrics.memory = memoryCollector_.Collect();
+    if (cfg.showGpu) {
+        metrics.gpus = gpuCollector_.CollectMultiple(cfg.targetGpuIndices, cfg.targetAllGpus);
         if (!metrics.gpus.empty()) {
             metrics.gpu = metrics.gpus[0];
         }
     }
-    if (config_.showNet) metrics.network = netCollector_.Collect();
+    if (cfg.showNet) metrics.network = netCollector_.Collect();
     {
         std::lock_guard<std::mutex> lock(metricsMutex_);
         latestMetrics_ = metrics;
@@ -89,22 +95,36 @@ void TelemetryEngine::Wake() {
     cv_.notify_all();
 }
 
+void TelemetryEngine::UpdateConfig(const AppConfig& config) {
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        config_ = config;
+    }
+    Wake();
+}
+
 void TelemetryEngine::WorkerLoop() {
     // Initial warmup
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     while (isRunning_.load()) {
         if (!isSuspended_.load()) {
+            AppConfig cfg;
+            {
+                std::lock_guard<std::mutex> lock(configMutex_);
+                cfg = config_;
+            }
+
             SystemMetrics sample;
-            if (config_.showCpu) sample.cpu = cpuCollector_.Collect();
-            if (config_.showRam) sample.memory = memoryCollector_.Collect();
-            if (config_.showGpu) {
-                sample.gpus = gpuCollector_.CollectMultiple(config_.targetGpuIndices, config_.targetAllGpus);
+            if (cfg.showCpu) sample.cpu = cpuCollector_.Collect();
+            if (cfg.showRam) sample.memory = memoryCollector_.Collect();
+            if (cfg.showGpu) {
+                sample.gpus = gpuCollector_.CollectMultiple(cfg.targetGpuIndices, cfg.targetAllGpus);
                 if (!sample.gpus.empty()) {
                     sample.gpu = sample.gpus[0];
                 }
             }
-            if (config_.showNet) sample.network = netCollector_.Collect();
+            if (cfg.showNet) sample.network = netCollector_.Collect();
 
             {
                 std::lock_guard<std::mutex> lock(metricsMutex_);
@@ -116,7 +136,12 @@ void TelemetryEngine::WorkerLoop() {
             }
         }
 
-        uint32_t interval = (config_.refreshIntervalMs > 0) ? config_.refreshIntervalMs : 1000;
+        uint32_t interval = 1000;
+        {
+            std::lock_guard<std::mutex> lock(configMutex_);
+            interval = (config_.refreshIntervalMs > 0) ? config_.refreshIntervalMs : 1000;
+        }
+
         std::unique_lock<std::mutex> lock(cvMutex_);
         cv_.wait_for(lock, std::chrono::milliseconds(interval), [this] {
             return !isRunning_.load() || (!isSuspended_.load() && isSuspendedChanged_);

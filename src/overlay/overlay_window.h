@@ -40,6 +40,8 @@ public:
     UINT GetCurrentDpi() const { return currentDpi_; }
 
     void ForceRepaint();
+    void ReassertTopmost();
+    const AppConfig& GetConfig() const { return config_; }
     bool IsAutoStartEnabled() const;
     bool SetAutoStart(bool enable);
 
@@ -53,8 +55,27 @@ private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
+    void RenderOverlay(const std::vector<std::vector<FormattedSegment>>& rows);
     void RenderOverlay(const std::vector<FormattedSegment>& segments);
+    void RenderCustomGrid(const SystemMetrics& metrics);
+    void RenderCustomGridUnified(const SystemMetrics& metrics);
+    void RenderCustomGridIslands(const SystemMetrics& metrics);
+    void DestroyIslandWindows();
+    void UpdateIslandPositions();
     void RecalculateWindowPosition(int contentWidth, int contentHeight);
+
+    struct IslandSlot {
+        HWND hwnd = nullptr;
+        int colIndex = 0;
+        int rowIndex = 0;
+        std::string token;
+        std::wstring lastText;
+        int relX = 0;
+        int relY = 0;
+        int width = 0;
+        int height = 0;
+    };
+    std::vector<IslandSlot> islandSlots_;
 
     void SetupTrayIcon();
     void RemoveTrayIcon();
@@ -80,7 +101,7 @@ private:
     int animTicksRemaining_ = 0;
     SystemMetrics animTargetMetrics_{};
     SystemMetrics lastMetrics_{};
-    std::vector<FormattedSegment> lastSegments_;
+    std::vector<std::vector<FormattedSegment>> lastRows_;
     int windowX_ = 0;
     int windowY_ = 0;
     int windowWidth_ = 600;

@@ -27,14 +27,31 @@ static HHOOK s_hMouseHook = nullptr;
 static HWINEVENTHOOK s_hWinEventHook = nullptr;
 static OverlayWindow* s_pOverlayInstance = nullptr;
 
-static void CALLBACK WinEventProc(HWINEVENTHOOK, DWORD, HWND hwnd, LONG, LONG, DWORD, DWORD) {
-    if (s_pOverlayInstance && !s_pOverlayInstance->IsPositioningMode()) {
-        HWND overlayHwnd = s_pOverlayInstance->GetHwnd();
-        if (overlayHwnd && overlayHwnd != hwnd) {
-            SetWindowPos(overlayHwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            s_pOverlayInstance->ForceRepaint();
+static LRESULT CALLBACK IslandWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_WINDOWPOSCHANGING: {
+            auto* pwp = reinterpret_cast<WINDOWPOS*>(lParam);
+            if (s_pOverlayInstance && !s_pOverlayInstance->IsPositioningMode()) {
+                pwp->hwndInsertAfter = HWND_TOPMOST;
+            }
+            pwp->flags |= SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
         }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            BeginPaint(hwnd, &ps);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static void CALLBACK WinEventProc(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD) {
+    if (s_pOverlayInstance && !s_pOverlayInstance->IsPositioningMode()) {
+        s_pOverlayInstance->ReassertTopmost();
     }
 }
 
@@ -89,6 +106,8 @@ OverlayWindow::~OverlayWindow() {
         UnregisterPowerSettingNotification(hPowerNotify_);
         hPowerNotify_ = nullptr;
     }
+
+    DestroyIslandWindows();
 
     if (hwnd_) {
         UnregisterHotKey(hwnd_, HOTKEY_CTRL_SHIFT_M);
@@ -221,8 +240,12 @@ LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                     animTicksRemaining_ = 0;
                     isAnimatingRollUp_ = false;
                     lastRenderedText_.clear();
-                    lastSegments_ = Formatter::FormatSegments(animTargetMetrics_, &config_);
-                    RenderOverlay(lastSegments_);
+                    if (config_.layout == OverlayLayout::CustomGrid) {
+                        RenderCustomGrid(animTargetMetrics_);
+                    } else {
+                        lastRows_ = Formatter::FormatRows(animTargetMetrics_, &config_);
+                        RenderOverlay(lastRows_);
+                    }
 
                     // Startup Working Set Trimming: Release initialization pages
                     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
@@ -262,11 +285,40 @@ LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                     cur.gpu.fanSpeedPercent = static_cast<uint32_t>(*animTargetMetrics_.gpu.fanSpeedPercent * progress);
                 }
 
+                for (size_t gi = 0; gi < cur.gpus.size(); ++gi) {
+                    const auto& targetGpu = animTargetMetrics_.gpus[gi];
+                    auto& g = cur.gpus[gi];
+
+                    if (targetGpu.utilizationPercent.has_value()) {
+                        g.utilizationPercent = *targetGpu.utilizationPercent * progress;
+                    }
+                    g.memoryUsedBytes = static_cast<uint64_t>(targetGpu.memoryUsedBytes * progress);
+                    g.memoryTotalBytes = targetGpu.memoryTotalBytes; // Keep max static!
+                    if (targetGpu.temperatureC.has_value()) {
+                        g.temperatureC = static_cast<uint32_t>(*targetGpu.temperatureC * progress);
+                    }
+                    if (targetGpu.powerWatts.has_value()) {
+                        g.powerWatts = static_cast<uint32_t>(*targetGpu.powerWatts * progress);
+                    }
+                    if (targetGpu.fanRpm.has_value()) {
+                        g.fanRpm = static_cast<uint32_t>(*targetGpu.fanRpm * progress);
+                    } else if (targetGpu.fanSpeedPercent.has_value()) {
+                        g.fanSpeedPercent = static_cast<uint32_t>(*targetGpu.fanSpeedPercent * progress);
+                    }
+                }
+
                 cur.memory.usedBytes = static_cast<uint64_t>(animTargetMetrics_.memory.usedBytes * progress);
                 cur.memory.totalBytes = animTargetMetrics_.memory.totalBytes; // Keep max static!
 
-                lastSegments_ = Formatter::FormatSegments(cur, &config_);
-                RenderOverlay(lastSegments_);
+                cur.network.rxBytesPerSec = static_cast<uint64_t>(animTargetMetrics_.network.rxBytesPerSec * progress);
+                cur.network.txBytesPerSec = static_cast<uint64_t>(animTargetMetrics_.network.txBytesPerSec * progress);
+
+                if (config_.layout == OverlayLayout::CustomGrid) {
+                    RenderCustomGrid(cur);
+                } else {
+                    lastRows_ = Formatter::FormatRows(cur, &config_);
+                    RenderOverlay(lastRows_);
+                }
                 return 0;
             }
             break;
@@ -315,7 +367,12 @@ LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 windowY_ = lprc->top;
             }
             lastRenderedText_.clear();
-            RenderOverlay(lastSegments_);
+            if (lastRows_.empty()) {
+                lastRows_ = Formatter::FormatRows(lastMetrics_, &config_);
+            }
+            if (!lastRows_.empty()) {
+                RenderOverlay(lastRows_);
+            }
             return 0;
         }
 
@@ -323,7 +380,12 @@ LRESULT OverlayWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         case WM_SETTINGCHANGE: {
             RecalculateWindowPosition(windowWidth_, windowHeight_);
             SetWindowPos(hwnd_, HWND_TOPMOST, windowX_, windowY_, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
-            RenderOverlay(lastSegments_);
+            if (lastRows_.empty()) {
+                lastRows_ = Formatter::FormatRows(lastMetrics_, &config_);
+            }
+            if (!lastRows_.empty()) {
+                RenderOverlay(lastRows_);
+            }
             return 0;
         }
 
@@ -369,6 +431,14 @@ bool OverlayWindow::Initialize(HINSTANCE hInstance) {
             return false;
         }
     }
+
+    WNDCLASSEXW wci{};
+    wci.cbSize = sizeof(WNDCLASSEXW);
+    wci.lpfnWndProc = IslandWndProc;
+    wci.hInstance = hInstance;
+    wci.lpszClassName = L"BareStatsIslandClass";
+    wci.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    RegisterClassExW(&wci);
 
     DWORD exStyle = WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
     DWORD style = WS_POPUP;
@@ -484,7 +554,39 @@ void OverlayWindow::ShowTrayContextMenu() {
 
 void OverlayWindow::ForceRepaint() {
     lastRenderedText_.clear();
-    RenderOverlay(lastSegments_);
+    if (config_.layout == OverlayLayout::CustomGrid) {
+        RenderCustomGrid(lastMetrics_);
+        return;
+    }
+    if (lastRows_.empty()) {
+        lastRows_ = Formatter::FormatRows(lastMetrics_, &config_);
+    }
+    if (!lastRows_.empty()) {
+        RenderOverlay(lastRows_);
+    }
+}
+
+void OverlayWindow::ReassertTopmost() {
+    if (isPositioningMode_) return;
+    if (config_.layout == OverlayLayout::CustomGrid && config_.gridMode == GridMode::Islands) {
+        for (const auto& slot : islandSlots_) {
+            if (slot.hwnd && IsWindow(slot.hwnd)) {
+                HWND prev = GetWindow(slot.hwnd, GW_HWNDPREV);
+                if (prev != nullptr) {
+                    SetWindowPos(slot.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
+                }
+            }
+        }
+    } else {
+        if (hwnd_ && IsWindow(hwnd_)) {
+            HWND prev = GetWindow(hwnd_, GW_HWNDPREV);
+            if (prev != nullptr) {
+                SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
+            }
+        }
+    }
 }
 
 bool OverlayWindow::IsAutoStartEnabled() const {
@@ -525,7 +627,14 @@ bool OverlayWindow::SetAutoStart(bool enable) {
 void OverlayWindow::Show() {
     isVisible_ = true;
     if (hwnd_) {
-        ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+        if (config_.layout != OverlayLayout::CustomGrid || config_.gridMode != GridMode::Islands || isPositioningMode_) {
+            ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+        }
+    }
+    for (auto& slot : islandSlots_) {
+        if (slot.hwnd) {
+            ShowWindow(slot.hwnd, SW_SHOWNOACTIVATE);
+        }
     }
 }
 
@@ -533,6 +642,11 @@ void OverlayWindow::Hide() {
     isVisible_ = false;
     if (hwnd_) {
         ShowWindow(hwnd_, SW_HIDE);
+    }
+    for (auto& slot : islandSlots_) {
+        if (slot.hwnd) {
+            ShowWindow(slot.hwnd, SW_HIDE);
+        }
     }
 }
 
@@ -550,12 +664,20 @@ void OverlayWindow::ApplyConfig(const AppConfig& newConfig) {
     if (config_.opacity < 10) config_.opacity = 10;
     if (config_.opacity > 100) config_.opacity = 100;
 
+    DestroyIslandWindows();
     lastRenderedText_.clear();
     RecalculateWindowPosition(windowWidth_, windowHeight_);
-    SetWindowPos(hwnd_, HWND_TOPMOST, windowX_, windowY_, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
-    if (!lastSegments_.empty()) {
-        lastSegments_ = Formatter::FormatSegments(lastMetrics_, &config_);
-        RenderOverlay(lastSegments_);
+    SetWindowPos(hwnd_, HWND_TOPMOST, windowX_, windowY_, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    if (config_.layout != OverlayLayout::CustomGrid || config_.gridMode != GridMode::Islands || isPositioningMode_) {
+        ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+    }
+    if (config_.layout == OverlayLayout::CustomGrid) {
+        RenderCustomGrid(lastMetrics_);
+    } else {
+        lastRows_ = Formatter::FormatRows(lastMetrics_, &config_);
+        if (!lastRows_.empty()) {
+            RenderOverlay(lastRows_);
+        }
     }
 }
 
@@ -597,7 +719,11 @@ void OverlayWindow::SetPositioningMode(bool enable) {
     SetWindowPos(hwnd_, HWND_TOPMOST, windowX_, windowY_, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
     lastRenderedText_.clear();
-    RenderOverlay(lastSegments_);
+    if (config_.layout == OverlayLayout::CustomGrid) {
+        RenderCustomGrid(lastMetrics_);
+    } else if (!lastRows_.empty()) {
+        RenderOverlay(lastRows_);
+    }
 }
 
 void OverlayWindow::TriggerLaunchAnimation(const SystemMetrics& targetMetrics) {
@@ -636,9 +762,16 @@ void OverlayWindow::TriggerLaunchAnimation(const SystemMetrics& targetMetrics) {
     zeroMetrics.memory.usedBytes = 0;
     // Keep max static! (zeroMetrics.memory.totalBytes untouched)
 
+    zeroMetrics.network.rxBytesPerSec = 0;
+    zeroMetrics.network.txBytesPerSec = 0;
+
     lastRenderedText_.clear();
-    lastSegments_ = Formatter::FormatSegments(zeroMetrics, &config_);
-    RenderOverlay(lastSegments_);
+    if (config_.layout == OverlayLayout::CustomGrid) {
+        RenderCustomGrid(zeroMetrics);
+    } else {
+        lastRows_ = Formatter::FormatRows(zeroMetrics, &config_);
+        RenderOverlay(lastRows_);
+    }
 }
 
 void OverlayWindow::OnMoved() {
@@ -670,6 +803,7 @@ void OverlayWindow::OnMoved() {
         }
     }
 
+    UpdateIslandPositions();
     ConfigManager::Save(ConfigManager::GetDefaultConfigPath(), config_);
 }
 
@@ -681,9 +815,22 @@ void OverlayWindow::ResetToPreset(PositionPreset preset) {
     config_.customRelY = -1;
     ConfigManager::Save(ConfigManager::GetDefaultConfigPath(), config_);
 
+    if (config_.layout != OverlayLayout::CustomGrid || config_.gridMode != GridMode::Islands || isPositioningMode_) {
+        ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+    }
+
     lastRenderedText_.clear();
     RecalculateWindowPosition(windowWidth_, windowHeight_);
-    RenderOverlay(lastSegments_);
+    if (config_.layout == OverlayLayout::CustomGrid) {
+        RenderCustomGrid(lastMetrics_);
+    } else {
+        if (lastRows_.empty()) {
+            lastRows_ = Formatter::FormatRows(lastMetrics_, &config_);
+        }
+        if (!lastRows_.empty()) {
+            RenderOverlay(lastRows_);
+        }
+    }
 }
 
 void OverlayWindow::RecalculateWindowPosition(int contentWidth, int contentHeight) {
@@ -724,23 +871,35 @@ void OverlayWindow::UpdateMetrics(const SystemMetrics& metrics) {
     if (isAnimatingRollUp_) return;
     if (!isVisible_) return;
 
-    auto segments = Formatter::FormatSegments(metrics, &config_);
+    if (config_.layout == OverlayLayout::CustomGrid) {
+        RenderCustomGrid(metrics);
+        return;
+    }
 
-    // 15-Nanosecond Dirty Frame Check:
-    // If formatted text is identical and we are not in interactive move mode, skip 100% of GDI+ redraw!
+    auto rows = Formatter::FormatRows(metrics, &config_);
+
+    // 15-Nanosecond Dirty Frame Check across all rows:
     std::wstring fullText;
-    fullText.reserve(128);
-    for (const auto& seg : segments) {
-        fullText += seg.text;
+    fullText.reserve(256);
+    for (const auto& row : rows) {
+        for (const auto& seg : row) {
+            fullText += seg.text;
+        }
+        fullText += L"\n";
     }
 
     if (!isPositioningMode_ && fullText == lastRenderedText_) {
+        HWND prevWnd = GetWindow(hwnd_, GW_HWNDPREV);
+        if (prevWnd != nullptr) {
+            SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
+        }
         return; // Zero work! No DIB section, no GDI+, no UpdateLayeredWindow
     }
 
     lastRenderedText_ = std::move(fullText);
-    lastSegments_ = std::move(segments);
-    RenderOverlay(lastSegments_);
+    lastRows_ = std::move(rows);
+    RenderOverlay(lastRows_);
 }
 
 static void DrawVectorMoveIcon(Graphics& graphics, float cx, float cy, float radius, Color color, float penWidth = 1.5f) {
@@ -831,7 +990,12 @@ static std::unique_ptr<Font> CreateOverlayFont(const std::wstring& requestedFace
 }
 
 void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments) {
-    if (!hwnd_ || segments.empty()) return;
+    if (segments.empty()) return;
+    RenderOverlay(std::vector<std::vector<FormattedSegment>>{ segments });
+}
+
+void OverlayWindow::RenderOverlay(const std::vector<std::vector<FormattedSegment>>& rows) {
+    if (!hwnd_ || rows.empty()) return;
 
     HDC hdcScreen = GetDC(nullptr);
     if (!hdcScreen) return;
@@ -859,19 +1023,25 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
 
     RectF layoutRect(0, 0, 4000.0f * dpiScale, 300.0f * dpiScale);
     RectF headerBounds{};
-    REAL totalStatsWidth = 0.0f;
-    REAL maxStatsHeight = 0.0f;
+    REAL maxRowWidth = 0.0f;
+    REAL maxLineHeight = 0.0f;
 
     {
         Graphics measureGraphics(memDC);
         measureGraphics.SetTextRenderingHint(TextRenderingHintAntiAlias);
-        for (const auto& seg : segments) {
-            if (seg.text.empty()) continue;
-            RectF segBounds{};
-            measureGraphics.MeasureString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(0, 0), &format, &segBounds);
-            totalStatsWidth += segBounds.Width;
-            if (segBounds.Height > maxStatsHeight) {
-                maxStatsHeight = segBounds.Height;
+        for (const auto& row : rows) {
+            REAL rowWidth = 0.0f;
+            for (const auto& seg : row) {
+                if (seg.text.empty()) continue;
+                RectF segBounds{};
+                measureGraphics.MeasureString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(0, 0), &format, &segBounds);
+                rowWidth += segBounds.Width;
+                if (segBounds.Height > maxLineHeight) {
+                    maxLineHeight = segBounds.Height;
+                }
+            }
+            if (rowWidth > maxRowWidth) {
+                maxRowWidth = rowWidth;
             }
         }
         if (isPositioningMode_) {
@@ -879,8 +1049,11 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
         }
     }
 
-    int statsWidth = static_cast<int>(std::ceil(totalStatsWidth));
-    int statsHeight = static_cast<int>(std::ceil(maxStatsHeight));
+    int statsWidth = static_cast<int>(std::ceil(maxRowWidth));
+    int singleLineHeight = static_cast<int>(std::ceil(maxLineHeight));
+    int rowSpacing = static_cast<int>(std::round(2.0f * dpiScale));
+    int numRows = static_cast<int>(rows.size());
+    int totalStatsHeight = numRows * singleLineHeight + (numRows > 1 ? (numRows - 1) * rowSpacing : 0);
 
     int padX = static_cast<int>(std::round(14.0f * dpiScale));
     int padY = static_cast<int>(std::round(10.0f * dpiScale));
@@ -893,10 +1066,10 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
         headerHeight_ = static_cast<int>(std::round(24.0f * dpiScale));
         int headerExtra = static_cast<int>(std::round(36.0f * dpiScale));
         contentWidth = (std::max)(statsWidth + padX, headerTextWidth + headerExtra);
-        contentHeight = headerHeight_ + statsHeight + padY;
+        contentHeight = headerHeight_ + totalStatsHeight + padY;
     } else {
         contentWidth = statsWidth + padX;
-        contentHeight = statsHeight + padY;
+        contentHeight = totalStatsHeight + padY;
     }
 
     windowWidth_ = contentWidth;
@@ -968,7 +1141,7 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
 
         // Stats text position:
         REAL statsX = std::round(6.0f * dpiScale);
-        REAL statsY = isPositioningMode_ ? static_cast<REAL>(headerHeight_ + std::round(5.0f * dpiScale)) : std::round(5.0f * dpiScale);
+        REAL statsBaseY = isPositioningMode_ ? static_cast<REAL>(headerHeight_ + std::round(5.0f * dpiScale)) : std::round(5.0f * dpiScale);
         float shadowOffset = (std::max)(1.0f, std::round(1.0f * dpiScale));
 
         // Base text brush (bright crisp white for numbers and units)
@@ -1003,34 +1176,37 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
 
         SolidBrush shadowBrush(Color(180, 0, 0, 0));
 
-        // Render each segment token-by-token
-        REAL curX = statsX;
-        for (const auto& seg : segments) {
-            if (seg.text.empty()) continue;
+        // Render each row
+        for (int r = 0; r < numRows; ++r) {
+            REAL rowY = statsBaseY + r * (singleLineHeight + rowSpacing);
+            REAL curX = statsX;
+            for (const auto& seg : rows[r]) {
+                if (seg.text.empty()) continue;
 
-            RectF segBounds{};
-            graphics.MeasureString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(0, 0), &format, &segBounds);
+                RectF segBounds{};
+                graphics.MeasureString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(0, 0), &format, &segBounds);
 
-            // Draw smooth single-offset shadow for contrast
-            if (config_.dropShadow) {
-                graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(curX + shadowOffset, statsY + shadowOffset), &format, &shadowBrush);
+                // Draw smooth single-offset shadow for contrast
+                if (config_.dropShadow) {
+                    graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(curX + shadowOffset, rowY + shadowOffset), &format, &shadowBrush);
+                }
+
+                // Pick color brush by segment type / severity
+                Brush* pBrush = &textBrush;
+                if (seg.type == SegmentType::Separator || seg.isSeparator) {
+                    pBrush = &sepBrush;
+                } else if (seg.type == SegmentType::Label) {
+                    pBrush = &labelBrush;
+                } else if (seg.severity == MetricSeverity::Critical) {
+                    pBrush = &critBrush;
+                } else if (seg.severity == MetricSeverity::High) {
+                    pBrush = &highBrush;
+                }
+
+                graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(curX, rowY), &format, pBrush);
+
+                curX += segBounds.Width;
             }
-
-            // Pick color brush by segment type / severity
-            Brush* pBrush = &textBrush;
-            if (seg.type == SegmentType::Separator || seg.isSeparator) {
-                pBrush = &sepBrush;
-            } else if (seg.type == SegmentType::Label) {
-                pBrush = &labelBrush;
-            } else if (seg.severity == MetricSeverity::Critical) {
-                pBrush = &critBrush;
-            } else if (seg.severity == MetricSeverity::High) {
-                pBrush = &highBrush;
-            }
-
-            graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(curX, statsY), &format, pBrush);
-
-            curX += segBounds.Width;
         }
     }
 
@@ -1046,6 +1222,7 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
     blend.AlphaFormat = AC_SRC_ALPHA;
 
     UpdateLayeredWindow(hwnd_, hdcScreen, &ptDst, &wndSize, memDC, &ptSrc, 0, &blend, ULW_ALPHA);
+    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 
     if (!isPositioningMode_) {
         HWND prevWnd = GetWindow(hwnd_, GW_HWNDPREV);
@@ -1057,6 +1234,707 @@ void OverlayWindow::RenderOverlay(const std::vector<FormattedSegment>& segments)
 
     SelectObject(memDC, hOldBmp);
     DeleteObject(hBmp);
+    DeleteDC(memDC);
+    ReleaseDC(nullptr, hdcScreen);
+}
+
+void OverlayWindow::DestroyIslandWindows() {
+    for (auto& slot : islandSlots_) {
+        if (slot.hwnd) {
+            DestroyWindow(slot.hwnd);
+            slot.hwnd = nullptr;
+        }
+    }
+    islandSlots_.clear();
+}
+
+void OverlayWindow::UpdateIslandPositions() {
+    for (auto& slot : islandSlots_) {
+        if (slot.hwnd && IsWindow(slot.hwnd)) {
+            int curX = windowX_ + slot.relX;
+            int curY = windowY_ + slot.relY;
+            SetWindowPos(slot.hwnd, HWND_TOPMOST, curX, curY, 0, 0,
+                         SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
+        }
+    }
+}
+
+static void ComputeGridColumns(const CustomGridDefinition& grid,
+                               const std::vector<std::vector<REAL>>& cellWidths,
+                               float dpiScale, REAL cellGapPx,
+                               std::vector<REAL>& outColWidth,
+                               std::vector<REAL>& outColX) {
+    outColWidth.assign(grid.numCols, 0.0f);
+    outColX.assign(grid.numCols, 0.0f);
+    if (grid.numCols <= 0) return;
+
+    // Pass 1: Single-cell width resolution (colSpan == 1)
+    for (int r = 0; r < grid.numRows; ++r) {
+        if (r >= static_cast<int>(cellWidths.size())) continue;
+        for (size_t ci = 0; ci < grid.rows[r].cells.size(); ++ci) {
+            if (ci >= cellWidths[r].size()) continue;
+            const auto& cell = grid.rows[r].cells[ci];
+            if (cell.colSpan == 1 && !cell.token.empty() && cell.colIndex < grid.numCols) {
+                outColWidth[cell.colIndex] = (std::max)(outColWidth[cell.colIndex], cellWidths[r][ci]);
+            }
+        }
+    }
+
+    // Pass 2: Base column width resolution for empty / spacer columns
+    REAL sumKnown = 0.0f;
+    int countKnown = 0;
+    for (int c = 0; c < grid.numCols; ++c) {
+        if (outColWidth[c] > 0.0f) {
+            sumKnown += outColWidth[c];
+            countKnown++;
+        }
+    }
+
+    REAL avgColWidth = 0.0f;
+    if (countKnown > 0) {
+        avgColWidth = sumKnown / static_cast<REAL>(countKnown);
+    } else {
+        REAL maxSpannedPerCol = 0.0f;
+        for (int r = 0; r < grid.numRows; ++r) {
+            if (r >= static_cast<int>(cellWidths.size())) continue;
+            for (size_t ci = 0; ci < grid.rows[r].cells.size(); ++ci) {
+                if (ci >= cellWidths[r].size()) continue;
+                const auto& cell = grid.rows[r].cells[ci];
+                if (!cell.token.empty() && cell.colSpan > 0) {
+                    REAL perCol = cellWidths[r][ci] / static_cast<REAL>(cell.colSpan);
+                    if (perCol > maxSpannedPerCol) maxSpannedPerCol = perCol;
+                }
+            }
+        }
+        avgColWidth = (maxSpannedPerCol > 0.0f) ? maxSpannedPerCol : std::round(90.0f * dpiScale);
+    }
+
+    for (int c = 0; c < grid.numCols; ++c) {
+        if (outColWidth[c] <= 0.0f) {
+            outColWidth[c] = avgColWidth;
+        }
+    }
+
+    // Pass 3: Spanned-cell width distribution (colSpan > 1)
+    for (int r = 0; r < grid.numRows; ++r) {
+        if (r >= static_cast<int>(cellWidths.size())) continue;
+        for (size_t ci = 0; ci < grid.rows[r].cells.size(); ++ci) {
+            if (ci >= cellWidths[r].size()) continue;
+            const auto& cell = grid.rows[r].cells[ci];
+            if (cell.colSpan > 1 && !cell.token.empty() && cell.colIndex < grid.numCols) {
+                int endCol = (std::min)(cell.colIndex + cell.colSpan, grid.numCols);
+                int span = endCol - cell.colIndex;
+                if (span <= 0) continue;
+
+                REAL avail = 0.0f;
+                for (int k = cell.colIndex; k < endCol; ++k) {
+                    avail += outColWidth[k];
+                }
+                avail += (span - 1) * cellGapPx;
+
+                if (cellWidths[r][ci] > avail) {
+                    REAL extra = (cellWidths[r][ci] - avail) / static_cast<REAL>(span);
+                    for (int k = cell.colIndex; k < endCol; ++k) {
+                        outColWidth[k] += extra;
+                    }
+                }
+            }
+        }
+    }
+
+    // Pass 4: Column X offsets
+    outColX[0] = 0.0f;
+    for (int c = 1; c < grid.numCols; ++c) {
+        outColX[c] = outColX[c - 1] + outColWidth[c - 1] + cellGapPx;
+    }
+}
+
+void OverlayWindow::RenderCustomGrid(const SystemMetrics& metrics) {
+    if (config_.gridMode == GridMode::Islands) {
+        RenderCustomGridIslands(metrics);
+    } else {
+        if (!islandSlots_.empty()) {
+            DestroyIslandWindows();
+        }
+        if (hwnd_) {
+            ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+        }
+        RenderCustomGridUnified(metrics);
+    }
+}
+
+void OverlayWindow::RenderCustomGridUnified(const SystemMetrics& metrics) {
+    if (!hwnd_) return;
+    const auto& grid = config_.customGrid;
+    if (grid.numCols <= 0 || grid.numRows <= 0) {
+        lastRows_ = Formatter::FormatRows(metrics, &config_);
+        RenderOverlay(lastRows_);
+        return;
+    }
+
+    HDC hdcScreen = GetDC(nullptr);
+    if (!hdcScreen) return;
+    HDC memDC = CreateCompatibleDC(hdcScreen);
+    if (!memDC) {
+        ReleaseDC(nullptr, hdcScreen);
+        return;
+    }
+
+    float dpiScale = (currentDpi_ > 0 ? currentDpi_ : 96) / 96.0f;
+    auto overlayFont = CreateOverlayFont(config_.fontFace, config_.fontWeight, config_.fontSize, dpiScale);
+
+    float headerFontSize = std::round(11.0f * dpiScale);
+    auto headerFont = std::make_unique<Font>(L"Segoe UI", headerFontSize, FontStyleBold, UnitPixel);
+    if (headerFont->GetLastStatus() != Status::Ok) {
+        headerFont = std::make_unique<Font>(L"Consolas", headerFontSize, FontStyleBold, UnitPixel);
+    }
+
+    StringFormat format(StringFormat::GenericTypographic());
+    format.SetFormatFlags(format.GetFormatFlags() | StringFormatFlagsMeasureTrailingSpaces | StringFormatFlagsNoWrap);
+
+    std::vector<std::vector<std::vector<FormattedSegment>>> cellSegs(grid.numRows);
+    std::vector<std::vector<REAL>> cellWidths(grid.numRows);
+    REAL maxLineHeight = 0.0f;
+    std::wstring dirtyCheckText;
+    dirtyCheckText.reserve(512);
+
+    {
+        Graphics measureGraphics(memDC);
+        measureGraphics.SetTextRenderingHint(TextRenderingHintAntiAlias);
+
+        for (int r = 0; r < grid.numRows; ++r) {
+            cellSegs[r].resize(grid.rows[r].cells.size());
+            cellWidths[r].resize(grid.rows[r].cells.size(), 0.0f);
+
+            for (size_t ci = 0; ci < grid.rows[r].cells.size(); ++ci) {
+                const auto& cell = grid.rows[r].cells[ci];
+                if (cell.token.empty()) {
+                    dirtyCheckText += L"[.]";
+                    continue;
+                }
+
+                auto segs = Formatter::FormatCell(cell.token, metrics, &config_);
+                REAL segW = 0.0f;
+                for (const auto& s : segs) {
+                    if (s.text.empty()) continue;
+                    dirtyCheckText += s.text;
+                    RectF sb{};
+                    measureGraphics.MeasureString(s.text.c_str(), static_cast<int>(s.text.length()), overlayFont.get(), PointF(0, 0), &format, &sb);
+                    segW += sb.Width;
+                    if (sb.Height > maxLineHeight) {
+                        maxLineHeight = sb.Height;
+                    }
+                }
+                dirtyCheckText += L"|";
+                cellWidths[r][ci] = segW;
+                cellSegs[r][ci] = std::move(segs);
+            }
+            dirtyCheckText += L"\n";
+        }
+    }
+
+    // 15-Nanosecond Dirty Frame Check
+    if (!isPositioningMode_ && dirtyCheckText == lastRenderedText_) {
+        HWND prevWnd = GetWindow(hwnd_, GW_HWNDPREV);
+        if (prevWnd != nullptr) {
+            SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
+        }
+        DeleteDC(memDC);
+        ReleaseDC(nullptr, hdcScreen);
+        return;
+    }
+    lastRenderedText_ = std::move(dirtyCheckText);
+
+    std::vector<REAL> colWidth(grid.numCols, 0.0f);
+    std::vector<REAL> colX(grid.numCols, 0.0f);
+    REAL cellGapPx = config_.cellGap * dpiScale;
+    REAL rowGapPx = config_.rowGap * dpiScale;
+
+    ComputeGridColumns(grid, cellWidths, dpiScale, cellGapPx, colWidth, colX);
+
+    int singleLineHeight = static_cast<int>(std::ceil(maxLineHeight));
+    if (singleLineHeight <= 0) {
+        singleLineHeight = static_cast<int>(std::round(18.0f * dpiScale));
+    }
+
+    REAL totalStatsWidthReal = (grid.numCols > 0) ? (colX.back() + colWidth.back()) : 0.0f;
+    int statsWidth = static_cast<int>(std::ceil(totalStatsWidthReal));
+    int totalStatsHeight = grid.numRows * singleLineHeight + (grid.numRows > 1 ? static_cast<int>(std::round((grid.numRows - 1) * rowGapPx)) : 0);
+
+    int padX = static_cast<int>(std::round(14.0f * dpiScale));
+    int padY = static_cast<int>(std::round(10.0f * dpiScale));
+
+    std::wstring headerText = L"MOVE MODE: Drag to reposition \x2022 Click outside or Ctrl+Shift+M to lock";
+    RectF headerBounds{};
+    int contentWidth = 0;
+    int contentHeight = 0;
+
+    if (isPositioningMode_) {
+        Graphics measureGraphics(memDC);
+        measureGraphics.SetTextRenderingHint(TextRenderingHintAntiAlias);
+        RectF layoutRect(0, 0, 4000.0f * dpiScale, 300.0f * dpiScale);
+        measureGraphics.MeasureString(headerText.c_str(), -1, headerFont.get(), layoutRect, &headerBounds);
+
+        int headerTextWidth = static_cast<int>(std::ceil(headerBounds.Width));
+        headerHeight_ = static_cast<int>(std::round(24.0f * dpiScale));
+        int headerExtra = static_cast<int>(std::round(36.0f * dpiScale));
+        contentWidth = (std::max)(statsWidth + padX, headerTextWidth + headerExtra);
+        contentHeight = headerHeight_ + totalStatsHeight + padY;
+    } else {
+        contentWidth = statsWidth + padX;
+        contentHeight = totalStatsHeight + padY;
+    }
+
+    windowWidth_ = contentWidth;
+    windowHeight_ = contentHeight;
+
+    if (!isPositioningMode_) {
+        RecalculateWindowPosition(windowWidth_, windowHeight_);
+    } else {
+        RECT curRect{};
+        if (GetWindowRect(hwnd_, &curRect) && (curRect.right - curRect.left > 0)) {
+            windowX_ = curRect.left;
+            windowY_ = curRect.top;
+        }
+    }
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = contentWidth;
+    bmi.bmiHeader.biHeight = -contentHeight; // Top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* pvBits = nullptr;
+    HBITMAP hBmp = CreateDIBSection(hdcScreen, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
+    if (!hBmp) {
+        DeleteDC(memDC);
+        ReleaseDC(nullptr, hdcScreen);
+        return;
+    }
+
+    HBITMAP hOldBmp = reinterpret_cast<HBITMAP>(SelectObject(memDC, hBmp));
+    memset(pvBits, 0, contentWidth * contentHeight * 4);
+
+    {
+        Graphics graphics(memDC);
+        graphics.SetSmoothingMode(SmoothingModeAntiAlias);
+        graphics.SetTextRenderingHint(TextRenderingHintAntiAlias);
+
+        if (isPositioningMode_) {
+            SolidBrush bgBrush(Color(235, 18, 24, 34));
+            graphics.FillRectangle(&bgBrush, 0, 0, contentWidth, contentHeight);
+
+            SolidBrush titleBgBrush(Color(245, 26, 36, 50));
+            graphics.FillRectangle(&titleBgBrush, 1, 1, contentWidth - 2, headerHeight_ - 1);
+
+            Pen divPen(Color(180, 0, 200, 240), 1.0f);
+            graphics.DrawLine(&divPen, 1, headerHeight_, contentWidth - 2, headerHeight_);
+
+            Pen borderPen(Color(255, 0, 220, 255), 1.5f * dpiScale);
+            graphics.DrawRectangle(&borderPen, 1, 1, contentWidth - 3, contentHeight - 3);
+
+            float iconCy = headerHeight_ / 2.0f;
+            float iconCx = 14.0f * dpiScale;
+            float iconRadius = 5.0f * dpiScale;
+            DrawVectorMoveIcon(graphics, iconCx, iconCy, iconRadius, Color(255, 0, 230, 255), 1.5f * dpiScale);
+
+            SolidBrush headerTextBrush(Color(255, 255, 215, 0));
+            float headerTx = 24.0f * dpiScale;
+            float headerTy = (headerHeight_ - headerBounds.Height) / 2.0f;
+            graphics.DrawString(headerText.c_str(), -1, headerFont.get(), PointF(headerTx, headerTy), &headerTextBrush);
+        }
+
+        REAL statsX = std::round(6.0f * dpiScale);
+        REAL statsBaseY = isPositioningMode_ ? static_cast<REAL>(headerHeight_ + std::round(5.0f * dpiScale)) : std::round(5.0f * dpiScale);
+        float shadowOffset = (std::max)(1.0f, std::round(1.0f * dpiScale));
+
+        BYTE rBase = GetRValue(config_.textColor), gBase = GetGValue(config_.textColor), bBase = GetBValue(config_.textColor);
+        SolidBrush textBrush(Color(255, rBase, gBase, bBase));
+
+        BYTE rLabel = GetRValue(config_.labelColor), gLabel = GetGValue(config_.labelColor), bLabel = GetBValue(config_.labelColor);
+        SolidBrush labelBrush(Color(255, rLabel, gLabel, bLabel));
+
+        BYTE rSep = GetRValue(config_.separatorColor), gSep = GetGValue(config_.separatorColor), bSep = GetBValue(config_.separatorColor);
+        SolidBrush sepBrush(Color(255, rSep, gSep, bSep));
+
+        BYTE rHigh = GetRValue(config_.colorHigh), gHigh = GetGValue(config_.colorHigh), bHigh = GetBValue(config_.colorHigh);
+        SolidBrush highBrush(Color(255, rHigh, gHigh, bHigh));
+
+        BYTE rCrit = GetRValue(config_.colorCritical), gCrit = GetGValue(config_.colorCritical), bCrit = GetBValue(config_.colorCritical);
+        SolidBrush critBrush(Color(255, rCrit, gCrit, bCrit));
+
+        SolidBrush shadowBrush(Color(180, 0, 0, 0));
+
+        // Draw each grid cell at its exact computed column coordinate
+        for (int r = 0; r < grid.numRows; ++r) {
+            REAL rowY = statsBaseY + r * (singleLineHeight + rowGapPx);
+
+            for (size_t ci = 0; ci < grid.rows[r].cells.size(); ++ci) {
+                const auto& cell = grid.rows[r].cells[ci];
+                if (cell.token.empty() || cell.colIndex >= grid.numCols) continue;
+
+                REAL cellX = statsX + colX[cell.colIndex];
+                REAL curX = cellX;
+
+                for (const auto& seg : cellSegs[r][ci]) {
+                    if (seg.text.empty()) continue;
+                    RectF segBounds{};
+                    graphics.MeasureString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(0, 0), &format, &segBounds);
+
+                    if (config_.dropShadow) {
+                        graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(curX + shadowOffset, rowY + shadowOffset), &format, &shadowBrush);
+                    }
+
+                    Brush* pBrush = &textBrush;
+                    if (seg.type == SegmentType::Separator || seg.isSeparator) {
+                        pBrush = &sepBrush;
+                    } else if (seg.type == SegmentType::Label) {
+                        pBrush = &labelBrush;
+                    } else if (seg.severity == MetricSeverity::Critical) {
+                        pBrush = &critBrush;
+                    } else if (seg.severity == MetricSeverity::High) {
+                        pBrush = &highBrush;
+                    }
+
+                    graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(curX, rowY), &format, pBrush);
+                    curX += segBounds.Width;
+                }
+            }
+        }
+    }
+
+    POINT ptSrc = { 0, 0 };
+    SIZE wndSize = { contentWidth, contentHeight };
+    POINT ptDst = { windowX_, windowY_ };
+
+    BLENDFUNCTION blend{};
+    blend.BlendOp = AC_SRC_OVER;
+    blend.BlendFlags = 0;
+    BYTE alpha = static_cast<BYTE>(std::clamp((config_.opacity * 255) / 100, 25, 255));
+    blend.SourceConstantAlpha = alpha;
+    blend.AlphaFormat = AC_SRC_ALPHA;
+
+    UpdateLayeredWindow(hwnd_, hdcScreen, &ptDst, &wndSize, memDC, &ptSrc, 0, &blend, ULW_ALPHA);
+    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+
+    if (!isPositioningMode_) {
+        HWND prevWnd = GetWindow(hwnd_, GW_HWNDPREV);
+        if (prevWnd != nullptr) {
+            SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
+        }
+    }
+
+    SelectObject(memDC, hOldBmp);
+    DeleteObject(hBmp);
+    DeleteDC(memDC);
+    ReleaseDC(nullptr, hdcScreen);
+}
+
+void OverlayWindow::RenderCustomGridIslands(const SystemMetrics& metrics) {
+    if (!hwnd_) return;
+    const auto& grid = config_.customGrid;
+    if (grid.numCols <= 0 || grid.numRows <= 0) {
+        lastRows_ = Formatter::FormatRows(metrics, &config_);
+        RenderOverlay(lastRows_);
+        return;
+    }
+
+    HDC hdcScreen = GetDC(nullptr);
+    if (!hdcScreen) return;
+    HDC memDC = CreateCompatibleDC(hdcScreen);
+    if (!memDC) {
+        ReleaseDC(nullptr, hdcScreen);
+        return;
+    }
+
+    float dpiScale = (currentDpi_ > 0 ? currentDpi_ : 96) / 96.0f;
+    auto overlayFont = CreateOverlayFont(config_.fontFace, config_.fontWeight, config_.fontSize, dpiScale);
+
+    float headerFontSize = std::round(11.0f * dpiScale);
+    auto headerFont = std::make_unique<Font>(L"Segoe UI", headerFontSize, FontStyleBold, UnitPixel);
+    if (headerFont->GetLastStatus() != Status::Ok) {
+        headerFont = std::make_unique<Font>(L"Consolas", headerFontSize, FontStyleBold, UnitPixel);
+    }
+
+    StringFormat format(StringFormat::GenericTypographic());
+    format.SetFormatFlags(format.GetFormatFlags() | StringFormatFlagsMeasureTrailingSpaces | StringFormatFlagsNoWrap);
+
+    struct ActiveCell {
+        int r = 0;
+        int ci = 0;
+        int colIndex = 0;
+        int colSpan = 1;
+        std::string token;
+        std::vector<FormattedSegment> segs;
+        REAL width = 0.0f;
+    };
+
+    std::vector<ActiveCell> activeCells;
+    REAL maxLineHeight = 0.0f;
+
+    {
+        Graphics measureGraphics(memDC);
+        measureGraphics.SetTextRenderingHint(TextRenderingHintAntiAlias);
+
+        for (int r = 0; r < grid.numRows; ++r) {
+            for (size_t ci = 0; ci < grid.rows[r].cells.size(); ++ci) {
+                const auto& cell = grid.rows[r].cells[ci];
+                if (cell.token.empty()) continue;
+
+                auto segs = Formatter::FormatCell(cell.token, metrics, &config_);
+                if (segs.empty()) continue;
+
+                REAL segW = 0.0f;
+                for (const auto& s : segs) {
+                    if (s.text.empty()) continue;
+                    RectF sb{};
+                    measureGraphics.MeasureString(s.text.c_str(), static_cast<int>(s.text.length()), overlayFont.get(), PointF(0, 0), &format, &sb);
+                    segW += sb.Width;
+                    if (sb.Height > maxLineHeight) {
+                        maxLineHeight = sb.Height;
+                    }
+                }
+                activeCells.push_back({ r, static_cast<int>(ci), cell.colIndex, cell.colSpan, cell.token, std::move(segs), segW });
+            }
+        }
+    }
+
+    std::vector<REAL> colWidth(grid.numCols, 0.0f);
+    std::vector<REAL> colX(grid.numCols, 0.0f);
+    REAL cellGapPx = config_.cellGap * dpiScale;
+    REAL rowGapPx = config_.rowGap * dpiScale;
+
+    std::vector<std::vector<REAL>> cellWidths(grid.numRows);
+    for (int r = 0; r < grid.numRows; ++r) {
+        cellWidths[r].resize(grid.rows[r].cells.size(), 0.0f);
+    }
+    for (const auto& ac : activeCells) {
+        if (ac.r < grid.numRows && ac.ci < static_cast<int>(cellWidths[ac.r].size())) {
+            cellWidths[ac.r][ac.ci] = ac.width;
+        }
+    }
+
+    ComputeGridColumns(grid, cellWidths, dpiScale, cellGapPx, colWidth, colX);
+
+    int singleLineHeight = static_cast<int>(std::ceil(maxLineHeight));
+    if (singleLineHeight <= 0) singleLineHeight = static_cast<int>(std::round(18.0f * dpiScale));
+
+    REAL totalStatsWidthReal = (grid.numCols > 0) ? (colX.back() + colWidth.back()) : 0.0f;
+    int statsWidth = static_cast<int>(std::ceil(totalStatsWidthReal));
+    int totalStatsHeight = grid.numRows * singleLineHeight + (grid.numRows > 1 ? static_cast<int>(std::round((grid.numRows - 1) * rowGapPx)) : 0);
+
+    int padX = static_cast<int>(std::round(10.0f * dpiScale));
+    int padY = static_cast<int>(std::round(6.0f * dpiScale));
+
+    int contentWidth = statsWidth + padX;
+    int contentHeight = totalStatsHeight + padY;
+
+    if (!isPositioningMode_) {
+        RecalculateWindowPosition(contentWidth, contentHeight);
+    } else {
+        RECT curRect{};
+        if (GetWindowRect(hwnd_, &curRect) && (curRect.right - curRect.left > 0)) {
+            windowX_ = curRect.left;
+            windowY_ = curRect.top;
+        }
+    }
+
+    // Synchronize island window instances
+    if (islandSlots_.size() != activeCells.size()) {
+        DestroyIslandWindows();
+        islandSlots_.resize(activeCells.size());
+        for (size_t i = 0; i < activeCells.size(); ++i) {
+            DWORD exStyle = WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+            HWND hIsland = CreateWindowExW(exStyle, L"BareStatsIslandClass", L"BareStats Island", WS_POPUP,
+                                           0, 0, 1, 1, nullptr, nullptr, hInstance_, nullptr);
+            islandSlots_[i].hwnd = hIsland;
+        }
+    }
+
+    std::wstring headerText = L"MOVE MODE: Drag Anchor to reposition \x2022 Ctrl+Shift+M to lock";
+    RectF headerBounds{};
+
+    if (isPositioningMode_) {
+        Graphics measureGraphics(memDC);
+        measureGraphics.SetTextRenderingHint(TextRenderingHintAntiAlias);
+        RectF layoutRect(0, 0, 4000.0f * dpiScale, 300.0f * dpiScale);
+        measureGraphics.MeasureString(headerText.c_str(), -1, headerFont.get(), layoutRect, &headerBounds);
+        headerHeight_ = static_cast<int>(std::round(24.0f * dpiScale));
+        windowWidth_ = (std::max)(contentWidth, static_cast<int>(std::ceil(headerBounds.Width)) + static_cast<int>(std::round(36.0f * dpiScale)));
+        windowHeight_ = headerHeight_;
+
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = windowWidth_;
+        bmi.bmiHeader.biHeight = -windowHeight_;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        void* pvBits = nullptr;
+        HBITMAP hBmp = CreateDIBSection(hdcScreen, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
+        if (hBmp) {
+            HBITMAP hOldBmp = reinterpret_cast<HBITMAP>(SelectObject(memDC, hBmp));
+            memset(pvBits, 0, windowWidth_ * windowHeight_ * 4);
+            Graphics graphics(memDC);
+            graphics.SetSmoothingMode(SmoothingModeAntiAlias);
+            graphics.SetTextRenderingHint(TextRenderingHintAntiAlias);
+
+            SolidBrush titleBgBrush(Color(245, 26, 36, 50));
+            graphics.FillRectangle(&titleBgBrush, 1, 1, windowWidth_ - 2, headerHeight_ - 1);
+            Pen borderPen(Color(255, 0, 220, 255), 1.5f * dpiScale);
+            graphics.DrawRectangle(&borderPen, 1, 1, windowWidth_ - 3, headerHeight_ - 3);
+
+            float iconCy = headerHeight_ / 2.0f;
+            float iconCx = 14.0f * dpiScale;
+            float iconRadius = 5.0f * dpiScale;
+            DrawVectorMoveIcon(graphics, iconCx, iconCy, iconRadius, Color(255, 0, 230, 255), 1.5f * dpiScale);
+
+            SolidBrush headerTextBrush(Color(255, 255, 215, 0));
+            float headerTx = 24.0f * dpiScale;
+            float headerTy = (headerHeight_ - headerBounds.Height) / 2.0f;
+            graphics.DrawString(headerText.c_str(), -1, headerFont.get(), PointF(headerTx, headerTy), &headerTextBrush);
+
+            POINT ptSrc = { 0, 0 };
+            SIZE wndSize = { windowWidth_, windowHeight_ };
+            POINT ptDst = { windowX_, windowY_ };
+            BLENDFUNCTION blend{};
+            blend.BlendOp = AC_SRC_OVER;
+            blend.SourceConstantAlpha = 255;
+            blend.AlphaFormat = AC_SRC_ALPHA;
+            UpdateLayeredWindow(hwnd_, hdcScreen, &ptDst, &wndSize, memDC, &ptSrc, 0, &blend, ULW_ALPHA);
+            ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+
+            SelectObject(memDC, hOldBmp);
+            DeleteObject(hBmp);
+        }
+    } else {
+        ShowWindow(hwnd_, SW_HIDE);
+    }
+
+    BYTE rBase = GetRValue(config_.textColor), gBase = GetGValue(config_.textColor), bBase = GetBValue(config_.textColor);
+    SolidBrush textBrush(Color(255, rBase, gBase, bBase));
+    BYTE rLabel = GetRValue(config_.labelColor), gLabel = GetGValue(config_.labelColor), bLabel = GetBValue(config_.labelColor);
+    SolidBrush labelBrush(Color(255, rLabel, gLabel, bLabel));
+    BYTE rSep = GetRValue(config_.separatorColor), gSep = GetGValue(config_.separatorColor), bSep = GetBValue(config_.separatorColor);
+    SolidBrush sepBrush(Color(255, rSep, gSep, bSep));
+    BYTE rHigh = GetRValue(config_.colorHigh), gHigh = GetGValue(config_.colorHigh), bHigh = GetBValue(config_.colorHigh);
+    SolidBrush highBrush(Color(255, rHigh, gHigh, bHigh));
+    BYTE rCrit = GetRValue(config_.colorCritical), gCrit = GetGValue(config_.colorCritical), bCrit = GetBValue(config_.colorCritical);
+    SolidBrush critBrush(Color(255, rCrit, gCrit, bCrit));
+    SolidBrush shadowBrush(Color(180, 0, 0, 0));
+    float shadowOffset = (std::max)(1.0f, std::round(1.0f * dpiScale));
+
+    // Render each Island window independently
+    for (size_t i = 0; i < activeCells.size(); ++i) {
+        const auto& ac = activeCells[i];
+        auto& slot = islandSlots_[i];
+        slot.token = ac.token;
+        slot.colIndex = ac.colIndex;
+        slot.rowIndex = ac.r;
+
+        int relX = static_cast<int>(colX[ac.colIndex]);
+        int relY = isPositioningMode_ ? (headerHeight_ + 4 + static_cast<int>(ac.r * (singleLineHeight + rowGapPx)))
+                                      : static_cast<int>(ac.r * (singleLineHeight + rowGapPx));
+        slot.relX = relX;
+        slot.relY = relY;
+
+        int endCol = (std::min)(ac.colIndex + ac.colSpan, grid.numCols);
+        int spanWidth = (endCol > ac.colIndex)
+            ? static_cast<int>(std::ceil(colX[endCol - 1] + colWidth[endCol - 1] - colX[ac.colIndex]))
+            : static_cast<int>(std::ceil(ac.width));
+        int w = (std::max)(static_cast<int>(std::ceil(ac.width)), spanWidth) + padX;
+        int h = singleLineHeight + padY;
+        slot.width = w;
+        slot.height = h;
+
+        int screenX = windowX_ + relX;
+        int screenY = windowY_ + relY;
+
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = w;
+        bmi.bmiHeader.biHeight = -h;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        void* pvBits = nullptr;
+        HBITMAP hBmp = CreateDIBSection(hdcScreen, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
+        if (!hBmp) continue;
+
+        HBITMAP hOldBmp = reinterpret_cast<HBITMAP>(SelectObject(memDC, hBmp));
+        memset(pvBits, 0, w * h * 4);
+
+        {
+            Graphics graphics(memDC);
+            graphics.SetSmoothingMode(SmoothingModeAntiAlias);
+            graphics.SetTextRenderingHint(TextRenderingHintAntiAlias);
+
+            if (isPositioningMode_) {
+                SolidBrush cellBg(Color(180, 15, 20, 28));
+                graphics.FillRectangle(&cellBg, 0, 0, w, h);
+                Pen cellBorder(Color(200, 0, 200, 240), 1.0f);
+                graphics.DrawRectangle(&cellBorder, 0, 0, w - 1, h - 1);
+            }
+
+            REAL curX = std::round(4.0f * dpiScale);
+            REAL curY = std::round(3.0f * dpiScale);
+
+            for (const auto& seg : ac.segs) {
+                if (seg.text.empty()) continue;
+                RectF segBounds{};
+                graphics.MeasureString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(0, 0), &format, &segBounds);
+
+                if (config_.dropShadow) {
+                    graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(curX + shadowOffset, curY + shadowOffset), &format, &shadowBrush);
+                }
+
+                Brush* pBrush = &textBrush;
+                if (seg.type == SegmentType::Separator || seg.isSeparator) {
+                    pBrush = &sepBrush;
+                } else if (seg.type == SegmentType::Label) {
+                    pBrush = &labelBrush;
+                } else if (seg.severity == MetricSeverity::Critical) {
+                    pBrush = &critBrush;
+                } else if (seg.severity == MetricSeverity::High) {
+                    pBrush = &highBrush;
+                }
+
+                graphics.DrawString(seg.text.c_str(), static_cast<int>(seg.text.length()), overlayFont.get(), PointF(curX, curY), &format, pBrush);
+                curX += segBounds.Width;
+            }
+        }
+
+        POINT ptSrc = { 0, 0 };
+        SIZE wndSize = { w, h };
+        POINT ptDst = { screenX, screenY };
+
+        BLENDFUNCTION blend{};
+        blend.BlendOp = AC_SRC_OVER;
+        BYTE alpha = static_cast<BYTE>(std::clamp((config_.opacity * 255) / 100, 25, 255));
+        blend.SourceConstantAlpha = alpha;
+        blend.AlphaFormat = AC_SRC_ALPHA;
+
+        UpdateLayeredWindow(slot.hwnd, hdcScreen, &ptDst, &wndSize, memDC, &ptSrc, 0, &blend, ULW_ALPHA);
+        ShowWindow(slot.hwnd, SW_SHOWNOACTIVATE);
+
+        if (!isPositioningMode_) {
+            HWND prevWnd = GetWindow(slot.hwnd, GW_HWNDPREV);
+            if (prevWnd != nullptr) {
+                SetWindowPos(slot.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
+            }
+        }
+
+        SelectObject(memDC, hOldBmp);
+        DeleteObject(hBmp);
+    }
+
     DeleteDC(memDC);
     ReleaseDC(nullptr, hdcScreen);
 }
