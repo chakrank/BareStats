@@ -1,9 +1,9 @@
 # BareStats
 
-> **An ultra-lightweight, zero-overhead native system telemetry overlay for Windows.**
+> **An ultra-lightweight, zero-overhead native system telemetry overlay for macOS, Linux, and Windows.**
 
 [![CI Matrix](https://github.com/chakrank/BareStats/actions/workflows/ci.yml/badge.svg)](https://github.com/chakrank/BareStats/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/Release-v1.2.0-blue.svg)](https://github.com/chakrank/BareStats/releases)
+[![Release](https://img.shields.io/badge/Release-v1.3.0-blue.svg)](https://github.com/chakrank/BareStats/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ---
@@ -19,7 +19,7 @@ Simultaneous Side-by-Side Multi-GPU Mode (gpu_index = 0, 1 or all):
 | Metric Segment    | Metric Name           | Description & Behavior                                                                 |
 | :---------------- | :-------------------- | :------------------------------------------------------------------------------------- |
 | `CPU 12%`         | Processor Utilization | Aggregate compute load across all physical and logical cores                           |
-| `GPU 45%`         | GPU Core Compute      | Active graphics engine load (NVML/ADL/IGCL with universal Windows D3DKMT fallback)     |
+| `GPU 45%`         | GPU Core Compute      | Active graphics engine load (NVML/ADL/IGCL with universal Windows D3DKMT and Linux DRM fallback) |
 | `4.2/16GB`        | Dedicated VRAM        | Allocated video memory vs capacity (`vram_mode = physical` gross or `usable` net alloc) |
 | `52°C`            | GPU Temperature       | Silicon core temperature with dynamic thermal threshold coloring                       |
 | `85W`             | Board Power Draw      | Real-time graphics package wattage relative to rated TDP limit                         |
@@ -33,38 +33,165 @@ _Note: Every metric segment can be independently toggled, reordered (`order = CP
 
 **Normal / Idle State:**
 
-![BareStats Taskbar Overlay - Idle Baseline](resources/images/bare_stats_preview_idle.png)
+![BareStats Taskbar Overlay - Idle Baseline](assets/images/bare_stats_preview_idle.png)
 
 **High Workload & Dynamic Thermal Alerts:**
 
-![BareStats Taskbar Overlay - Active Workload Alerts](resources/images/bare_stats_preview_load.png)
+![BareStats Taskbar Overlay - Active Workload Alerts](assets/images/bare_stats_preview_load.png)
 
 ---
 
 ## Overview & Design Philosophy
 
-**BareStats** is an ultra-lightweight, zero-overhead native telemetry overlay engineered for Windows that surfaces real-time system performance without the operational liabilities of conventional monitoring suites. It was designed with a dual focus: providing zero-latency performance tracking for **local AI/ML workloads** (such as running Ollama, PyTorch, vLLM, and ComfyUI without sacrificing VRAM or GPU compute cycles) and non-intrusive monitoring for competitive gaming and workstation productivity.
+**BareStats** is an ultra-lightweight, zero-overhead native telemetry overlay engineered for macOS, Linux, and Windows that surfaces real-time system performance without the operational liabilities of conventional monitoring suites. It was designed with a dual focus: providing zero-latency performance tracking for **local AI/ML workloads** (such as running Ollama, PyTorch, vLLM, and ComfyUI without sacrificing VRAM or GPU compute cycles) and non-intrusive monitoring for competitive gaming and workstation productivity.
 
-Heavyweight traditional tools and Electron-based dashboards introduce substantial operational overhead: they bundle background services, demand UAC Administrator elevation, aggressively wake mobile GPUs from low-power sleep states, hook into 3D rendering swapchains, and load unvetted kernel-mode drivers (`.sys`) that introduce crash risks and trigger anti-cheat software flags. For developers running memory-intensive local models, these tools steal valuable VRAM and system memory just to render monitoring graphs.
+Heavyweight traditional tools and Electron-based dashboards introduce substantial operational overhead: they bundle background services, demand root / Administrator elevation, aggressively wake mobile GPUs from low-power sleep states, hook into 3D rendering swapchains, and load unvetted kernel-mode drivers that introduce crash risks. For developers running memory-intensive local models, these tools steal valuable VRAM and system memory just to render monitoring graphs.
 
-BareStats eliminates these liabilities through an unprivileged, event-driven systems architecture built in native C++17 and unmanaged Win32. By decoupling hardware sampling onto a dedicated background worker, it directly interfaces with universal Windows display driver scheduling (WDDM / DXGI), unprivileged OS performance counters, native vendor telemetry pipelines (NVIDIA NVML, AMD ADL, and Intel IGCL), and Windows IP Helper tables, offloading presentation directly to the Desktop Window Manager (DWM) via hardware alpha compositing.
+BareStats eliminates these liabilities through an unprivileged, event-driven systems architecture built in native C++17 and Objective-C++. By decoupling hardware sampling onto a dedicated background worker, it directly interfaces with universal display driver scheduling (Metal and IOKit on macOS; WDDM/DXGI on Windows; Linux Direct Rendering Manager `/sys/class/drm` and `/sys/class/hwmon`), unprivileged OS performance counters (Mach kernel `host_statistics64` on macOS; `/proc/stat`, `/proc/meminfo`, `/proc/net/dev` on Linux), native vendor telemetry pipelines (Apple Silicon unified memory telemetry, NVIDIA NVML, AMD ADL, and Intel IGCL), and network routing tables, offloading presentation directly to the native compositor (Cocoa/AppKit floating `NSPanel` with CoreGraphics/CoreText on macOS; Desktop Window Manager via hardware alpha compositing on Windows; Cairo with X11 / XWayland shape masking on Linux).
 
-With v1.1 and v1.2, BareStats introduces a true mathematical matrix grid engine (`layout = custom_grid`), an isolated component island micro-HWND presentation architecture (`grid_mode = islands`) for zero-overhead distributed overlays across wide desktop canvases, multi-GPU grid wrapping (`max_gpus_per_row`), asymmetric per-adapter sensor controls (`[GPU0]`, `[GPU1]`), hardware auto-introspection with zero-loss schema migration, precision VRAM decoupling (`vram_mode`) that isolates static driver/firmware carve-outs from active application allocations, native telemetry for AMD Radeon and Intel Arc silicon, universal graphics engine load tracking for integrated graphics and Qualcomm Snapdragon X Elite (ARM64), and simultaneous side-by-side multi-GPU monitoring.
+With v1.3, BareStats achieves complete cross-platform parity across macOS, Linux, and Windows: native macOS menu bar status integration (`NSStatusItem`), an interactive Move Mode with click-outside exit, smooth mathematical Ease-Out Quadratic rolling number startup animations, single-instance mutex enforcement, multi-window component islands (`grid_mode = islands`) with OS-level click-through between slots, and native distribution packaging across Drag-and-Drop `.dmg`, Ubuntu/Debian, Fedora/RHEL, openSUSE, Arch Linux, AppImage, and portable tarballs.
 
-The result is a persistent, transparent single-line status bar delivering live CPU, multi-GPU, VRAM, RAM, and network throughput at an observed resident working set of just **~4.5 MB** and true **0.00%** idle CPU consumption via sub-microsecond dirty-frame bypasses. Operating strictly as a non-invasive, click-through desktop overlay, BareStats never intercepts game or application input, preserves laptop battery life, and runs completely safe alongside competitive anti-cheat systems.
+The result is a persistent, transparent single-line status bar delivering live CPU, multi-GPU, VRAM, RAM, and network throughput at an observed resident working set of just **~4.5 MB** on Windows (and ~2.9 MB native engine heap on Linux and macOS) with true **0.00%** idle CPU consumption via sub-microsecond dirty-frame bypasses. Operating strictly as a non-invasive, click-through desktop overlay, BareStats never intercepts application or game input, preserves laptop battery life, and runs completely safe alongside competitive anti-cheat systems.
 
 ---
 
-## Quick Start
+## Quick Start & Installation
 
-### Runtime System Requirements (End Users)
+### Supported Operating Systems
 
-- **Operating System:** Windows 10 or Windows 11 (64-bit: x64 or ARM64 / Snapdragon).
-- **Dependencies:** **None.** Single standalone executable (`BareStats.exe`). No installer, no .NET runtime, no Python, and no Visual C++ Redistributable package required.
+- **Linux:** Any modern x86_64 distribution running X11 or XWayland (Ubuntu, Debian, Fedora, openSUSE, Arch Linux, Manjaro, Linux Mint, Pop!_OS, RHEL/Rocky).
+  - Unprivileged: Reads `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `/sys/class/drm`, `/sys/class/hwmon`, and NVML for NVIDIA hardware.
+  - Dependencies: Standard system libraries (`libcairo2`, `libx11-6`, `libxfixes3`).
+- **macOS:** macOS 11.0 (Big Sur) through macOS 15+ (Sequoia) on both **Apple Silicon (ARM64)** and **Intel (x86_64)** via Universal Binaries.
+  - Unprivileged: Mach kernel (`host_statistics64`), Metal API (`MTLCopyAllDevices`), unprivileged IOKit `IOAccelerator`, and BSD sockets `getifaddrs`.
+  - Dependencies: None. Standard system frameworks (Cocoa, Metal, IOKit, CoreGraphics, CoreText, CoreFoundation). Distributed as a standalone Application Bundle (`BareStats.app`) and Drag-and-Drop `.dmg`.
+- **Windows:** Windows 10 or Windows 11 (64-bit: x64 or ARM64 / Snapdragon).
+  - Dependencies: None. Single standalone executable (`BareStats.exe`). No installer, no .NET runtime, no Python, and no Visual C++ Redistributable required.
 
-### Getting Started
+---
 
-1. **Download:** Grab the latest `BareStats.exe` from [Releases](https://github.com/chakrank/BareStats/releases).
+### Linux Installation by Distribution
+
+Pre-compiled distribution packages and cryptographic verification manifests are available on the [Releases](https://github.com/chakrank/BareStats/releases) page.
+
+#### Ubuntu / Debian / Linux Mint / Pop!_OS (`.deb`)
+
+Download `barestats_1.3.0_amd64.deb`:
+
+```bash
+# Install package
+sudo apt install ./barestats_1.3.0_amd64.deb
+
+# Launch BareStats
+barestats
+
+# Uninstall
+sudo apt remove barestats
+```
+
+#### Fedora / RHEL / CentOS / Rocky Linux (`.rpm`)
+
+Download `barestats-1.3.0-1.x86_64.rpm`:
+
+```bash
+# Install package
+sudo dnf install ./barestats-1.3.0-1.x86_64.rpm
+
+# Launch BareStats
+barestats
+
+# Uninstall
+sudo dnf remove barestats
+```
+
+#### openSUSE (Tumbleweed / Leap) (`.rpm`)
+
+Download `barestats-1.3.0-1.x86_64.rpm`:
+
+```bash
+# Install package
+sudo zypper install ./barestats-1.3.0-1.x86_64.rpm
+
+# Launch BareStats
+barestats
+
+# Uninstall
+sudo zypper remove barestats
+```
+
+#### Arch Linux / Manjaro / EndeavourOS (`.pkg.tar.zst`)
+
+Download `barestats-1.3.0-1-x86_64.pkg.tar.zst`:
+
+```bash
+# Install package
+sudo pacman -U ./barestats-1.3.0-1-x86_64.pkg.tar.zst
+
+# Launch BareStats
+barestats
+
+# Uninstall
+sudo pacman -R barestats
+```
+
+#### Universal AppImage (All Linux Distributions)
+
+Download `BareStats-1.3.0-x86_64.AppImage`:
+
+```bash
+# Make executable and run
+chmod +x BareStats-1.3.0-x86_64.AppImage
+./BareStats-1.3.0-x86_64.AppImage
+```
+
+#### Universal Tarball (Portable Archive with Installer)
+
+Download `barestats-1.3.0-linux-x86_64.tar.gz`:
+
+```bash
+# Extract archive
+tar -xzf barestats-1.3.0-linux-x86_64.tar.gz
+cd barestats-1.3.0-linux-x86_64
+
+# System-wide install (binary, .desktop launcher, icons, AppStream metadata)
+sudo ./install.sh
+
+# Or install to custom prefix (e.g. ~/.local)
+PREFIX=~/.local ./install.sh
+
+# To uninstall
+sudo ./uninstall.sh
+```
+
+#### Standalone Raw ELF Executable
+
+Download `barestats-linux-x86_64`:
+
+```bash
+chmod +x barestats-linux-x86_64
+./barestats-linux-x86_64
+```
+
+---
+
+### macOS Getting Started
+
+1. **Download:** Grab the latest `barestats-1.3.0-macOS.dmg` (or universal application bundle) from [Releases](https://github.com/chakrank/BareStats/releases).
+2. **Install:** Double-click the `.dmg` file and drag **BareStats** into your `/Applications` directory.
+3. **Launch:** Open `BareStats` from Applications or Spotlight. BareStats runs as an accessory menu bar utility (`LSUIElement = true`) with a native light/dark template status bar icon.
+4. **Reposition:** Click the menu bar icon and select **Reposition Mode** (or run `BareStats --move`). Click and drag the overlay anywhere across your screens, then press `Esc` or click outside to lock coordinates.
+5. **CLI Integration:** Send commands directly via local IPC socket:
+   - `/Applications/BareStats.app/Contents/MacOS/BareStats --toggle` to hide or show the overlay.
+   - `/Applications/BareStats.app/Contents/MacOS/BareStats --move` to engage interactive repositioning.
+   - `/Applications/BareStats.app/Contents/MacOS/BareStats --preset TopRight` to cycle corner positions.
+   - `/Applications/BareStats.app/Contents/MacOS/BareStats --reload` to re-read configuration.
+   - `/Applications/BareStats.app/Contents/MacOS/BareStats --quit` to exit cleanly.
+
+---
+
+### Windows Getting Started
+
+1. **Download:** Grab the latest `BareStats.exe` (or `BareStats-v1.3.0-Windows-x64.zip`) from [Releases](https://github.com/chakrank/BareStats/releases).
 2. **Launch:** Run `BareStats.exe`. The overlay automatically anchors above your taskbar on your primary display.
 3. **Reposition:** Press `Ctrl + Shift + M` (or `Ctrl + Alt + M`) to enter Move Mode. Click and drag the overlay to any position across any connected monitor, then click outside to lock.
 4. **Toggle Visibility:** Press `Ctrl + Shift + H` (or `Ctrl + Alt + H`) to instantly hide or reveal the overlay on demand without interrupting background sampling.
@@ -139,14 +266,33 @@ flowchart TD
 
 ## Empirical Performance Profile
 
-The following performance benchmarks reflect active execution traces on Windows 11 x64 systems:
+| Performance Dimension | Windows (Observed) | Linux (Observed) | Operational Impact |
+| :--- | :--- | :--- | :--- |
+| **Engine Working Memory** | ~4.5 MB (Private Working Set) | ~2.9 MB (Engine Heap) | Minimal memory allocation; zero dynamic bloat over time |
+| **System Monitor Reported** | ~4.5 MB in Task Manager | ~6–10 MB (sysfs) / ~34 MB (NVML RSS) / ~56 MB (with Tray Icon) | Reflects OS-specific reporting conventions (detailed below) |
+| **Sampling Execution Cycle** | ~8.2 ms per 1,000 ms tick | ~6.5 ms per 1,000 ms tick | Active CPU duty cycle under 0.85%; sleeps > 99% of the time |
+| **Static State Rendering** | 0.00% CPU duty cycle | 0.00% CPU duty cycle | Completely bypasses rasterization when telemetry data is unchanged |
+| **Standalone Binary Size** | ~420 KB | ~578 KB (stripped ELF) | Single executable without external runtime dependencies |
 
-| Performance Dimension        | Observed Metric           | Operational Impact                                                 |
-| :--------------------------- | :------------------------ | :----------------------------------------------------------------- |
-| **Resident Working Set**     | ~4.5 MB in Task Manager   | Minimal memory allocation; zero dynamic bloat over time            |
-| **Sampling Execution Cycle** | ~8.2 ms per 1,000 ms tick | Active CPU duty cycle under 0.85%; sleeps 99.15% of the time       |
-| **Static State Rendering**   | 0.00% CPU duty cycle      | Completely bypasses rasterization when telemetry data is unchanged |
-| **Standalone Binary Size**   | ~240 KB                   | Single executable with embedded icons and Per-Monitor V2 manifest  |
+### Memory Reporting: Linux vs. Windows Technical Breakdown
+
+Users inspecting memory consumption in system monitors will notice different numbers between operating systems: Windows Task Manager reports **< 4.5 MB**, while Linux utilities (`top`, `ps`, GNOME System Monitor) report **~34 MB Resident Set Size (RSS)** on systems with NVIDIA GPUs, or **~56 MB RSS** if the optional Linux System Tray icon is enabled.
+
+This difference is architectural, not application bloat:
+- **Windows Task Manager** displays *Active Private Working Set* by default, which strictly measures private dirty committed pages and completely excludes shared operating system DLLs.
+- **Linux System Monitors** report *Resident Set Size (RSS)*, which aggregates shared system libraries, driver scratch memory, and the application heap together.
+
+Empirical profiling (`/proc/<pid>/smaps_rollup` on a running BareStats instance) reveals where memory resides on Linux:
+
+#### Baseline Overlay Mode (`show_tray_icon = 0`, Default)
+- **~15.3 MB — System Shared Libraries:** Read-only pages from standard desktop libraries (`libc`, `libcairo`, `libX11`, `libfreetype`, `libharfbuzz`, font tables) already resident in RAM for the desktop session and shared across all running applications.
+- **~16.4 MB — NVIDIA Driver User-Space Arena:** On Linux, calling NVIDIA's `nvmlInit()` dynamically loads `libcuda.so` and immediately initializes a user-space DMA/CUDA client scratchpool in anonymous memory. (On Windows, NVIDIA places these buffers into kernel non-paged memory, which Task Manager does not charge to the user process).
+- **~2.9 MB — BareStats Native Engine:** The actual memory consumed by BareStats's telemetry pipeline, Cairo surfaces, and configuration state—matching its ultra-lightweight profile on Windows. On systems without NVIDIA proprietary drivers (e.g. Intel or AMD using sysfs), BareStats typically reports only **~6 to 10 MB total RSS**.
+
+#### Optional System Tray / AppIndicator Mode (`show_tray_icon = 1`)
+- When the optional desktop tray icon is enabled (`show_tray_icon = 1`), BareStats dynamically loads the Linux desktop indicator stack (`libayatana-appindicator3` and `libgtk-3.so.0`).
+- GTK3 and GIO initialize the desktop panel bridge, desktop theme styling (`gtk.gresource`), and DBus event workers, adding **~15.5 MB of shared library code pages** and **~6.5 MB of GTK internal state**, bringing reported RSS to **~56 MB** (or ~28 MB on systems without NVIDIA).
+- **Core Philosophy Preserved:** Even with the tray active, **~31 MB** of the reported RSS consists of read-only shared desktop libraries already resident in memory for the desktop compositor, while BareStats's core engine heap remains strictly **~2.9 MB**. Compared to Electron- or Python-based desktop telemetry utilities (which regularly consume 250–500+ MB), BareStats remains orders of magnitude lighter and 100% native C++. Users seeking the absolute leanest baseline can leave `show_tray_icon = 0` to bypass GTK loading entirely.
 
 ---
 
@@ -161,91 +307,128 @@ BareStats is engineered to guarantee full compatibility and zero ban risk alongs
 
 ---
 
-## Controls & Hotkeys
+## Controls, Hotkeys & Desktop Integration
 
-| Action                | Control / Hotkey                           | Description                                                                                                                        |
-| :-------------------- | :----------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------- |
-| **Move Mode**         | `Ctrl + Shift + M` _(or `Ctrl + Alt + M`)_ | Toggles interactive repositioning mode with an obsidian drag bounding box. Click and drag the overlay anywhere across any monitor. |
-| **Toggle Visibility** | `Ctrl + Shift + H` _(or `Ctrl + Alt + H`)_ | Instantly hides or reveals the overlay window without stopping the background telemetry engine.                                    |
-| **Lock Position**     | Left-click outside or re-press hotkey      | Anchors coordinates to configuration and restores click-through transparency.                                                      |
-| **System Tray**       | Left-Click icon                            | Toggles repositioning mode.                                                                                                        |
-| **System Tray**       | Right-Click icon                           | Context menu: Reposition, Reset Position, Hide/Show Overlay, Reload Config, Start with Windows, and Exit.                          |
+### Cross-Platform Controls & Shortcuts
+
+| Action | Linux Hotkey / Command | macOS Action / Command | Windows Hotkey / Tray | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **Move Mode** | `Ctrl + Shift + M` / `barestats --move` | Menu Bar Menu / `BareStats --move` | `Ctrl + Shift + M` / Tray Menu | Toggles interactive repositioning mode with an amber/gold bounding box. Click and drag anywhere across any monitor. Press `Esc` or click outside to lock. |
+| **Toggle Visibility** | `Ctrl + Shift + H` / `barestats --toggle` | Menu Bar Menu / `BareStats --toggle` | `Ctrl + Shift + H` / Tray Menu | Instantly hides or reveals the overlay window without stopping background telemetry sampling. |
+| **Lock / Exit Move** | Click outside or `Esc` | Click outside or `Esc` | Left-click outside or re-press hotkey | Anchors coordinates to configuration and restores click-through transparency. |
+| **Preset Selection** | `barestats --preset <name>` | Menu Bar Presets submenu | Tray Menu / `config.ini` | Instantly moves the overlay to standard screen locations (`Bottom Center`, `Top Center`, `Top Left`, `Top Right`, etc.). |
+| **Reload Config** | `barestats --reload` | Menu Bar Menu / `BareStats --reload` | Tray Menu / `config.ini` | Forces immediate reload of `config.ini`. |
+| **Exit** | `barestats --quit` | Menu Bar Menu / `BareStats --quit` | Tray Menu Exit | Gracefully terminates BareStats and restores desktop state. |
+
+### Linux Desktop Quick Actions & Panel Tray
+
+- **Desktop Quick Actions:** On Linux desktop environments (GNOME, KDE Plasma, XFCE, Cinnamon), right-click the **BareStats** icon in your dock, dash, or application launcher to toggle visibility, enter reposition mode, reset position, or cycle corner presets.
+- **Top Panel Tray Indicator:** When `show_tray_icon = 1` is configured, an unprivileged status indicator appears in the desktop panel with a full right-click context menu.
+
+### macOS Menu Bar Status Item
+
+BareStats runs unobtrusively in the macOS Menu Bar (`LSUIElement = true`) without cluttering the Dock or `Cmd+Tab` switcher:
+- **Dynamic Template Icon:** Automatically adjusts contrast for Light Mode, Dark Mode, and dynamic wallpaper transitions.
+- **Full Control Menu:**
+  - **Reposition Mode:** Engage interactive mouse drag bounding box.
+  - **Presets Submenu:** Select `Bottom Center`, `Top Center`, `Top Left`, `Top Right`, `Bottom Left`, or `Bottom Right`.
+  - **Toggle Visibility:** Instantly hide or reveal overlay (`Ctrl + Opt + H`).
+  - **Reload Configuration:** Apply manual `config.ini` changes on demand (`Ctrl + Opt + R`).
+  - **Quit BareStats:** Clean termination (`Cmd + Q` or menu).
+
+### Windows System Tray
+
+- **Left-Click:** Toggles Move Mode.
+- **Right-Click:** Context menu for Reposition, Reset Position, Hide/Show Overlay, Reload Config, Start with Windows, and Exit.
 
 ---
 
 ## Configuration Reference
 
-BareStats automatically provisions a default `config.ini` in its local directory (Portable Mode) or `%LOCALAPPDATA%\BareStats\` (Installed Mode). Changes saved in external editors apply instantly without restarting.
+BareStats automatically provisions a default `config.ini`:
+- **Linux:** `~/.config/barestats/config.ini` (or alongside the binary in portable directory).
+- **macOS:** `~/Library/Application Support/BareStats/config.ini` (with fallback to `~/.config/barestats/config.ini`).
+- **Windows:** `%LOCALAPPDATA%\BareStats\config.ini` (or alongside `BareStats.exe` in portable mode).
+
+Changes saved in external editors apply instantly without restarting (sub-second hot-reload).
 
 ```ini
 [BareStats]
-# Configuration schema version (used for automated zero-overhead migrations)
-schema_version = 120
+# Schema version for automated zero-overhead migrations
+schema_version = 130
 
 [Position]
-# Target monitor display index (0 = primary monitor, 1 = secondary, etc.)
+# Target display index (0 = primary monitor, 1 = secondary)
 monitor_index = 0
 
 # Position preset: bottom-center, top-center, top-left, top-right, bottom-left, bottom-right, custom
 preset = bottom-center
+
+# Absolute screen coordinates in pixels (active when preset = custom)
+custom_x = -1
+custom_y = -1
+
+# Monitor-relative coordinates (auto-saved during drag-and-drop repositioning)
+custom_rel_x = -1
+custom_rel_y = -1
+
+# Edge margin in pixels
 margin = 12
 
-# Layout geometry: horizontal (default), grid, or custom_grid
+# Layout mode: horizontal, grid, or custom_grid
 layout = horizontal
 
-# Grid rendering engine mode (active when layout = custom_grid):
-# unified (default single compact window) or islands (distributed micro-HWNDs for large gaps & multi-monitors)
+# Rendering engine for custom_grid: unified (single window) or islands (separate micro-surfaces)
 grid_mode = unified
+
+# Spacing between grid columns and rows in pixels
 cell_gap = 16
 row_gap = 4
 
-# Maximum GPUs displayed per row when layout = grid (default: 2)
+# Maximum GPUs displayed per row when layout = grid
 max_gpus_per_row = 2
 
-# Custom Matrix Grid rows (active when layout = custom_grid):
-# grid_row_1 = cpu  | .    | .    | ram
-# grid_row_2 = .    | .    | gpu0 | gpu0
-# grid_row_3 = gpu1 | gpu1 | gpu1 | gpu1
-# grid_row_4 = .    | net  | net  | net
+# Custom matrix rows (active when layout = custom_grid; '.' or 'null' for blank cells; colspans supported)
+# grid_row_1 = cpu | ram | net
+# grid_row_2 = gpu0 | gpu1
 
 [Appearance]
-# Font face family ("auto" dynamically inherits Windows system UI font)
+# Font face ("auto" dynamically inherits native system UI font)
 font_name = auto
 font_weight = semibold
 font_size = 13
 
-# Palette configuration (#RRGGBB)
+# Palette in hex (#RRGGBB)
 text_color = #FFFFFF
 label_color = #A0A0A0
 separator_color = #6E6E6E
 color_high = #FFD700
 color_critical = #FF4D4D
+
+# Dynamic threshold alerts and dark drop-shadow (1 = on, 0 = off)
 enable_dynamic_colors = 1
 drop_shadow = 1
 
-# Telemetry divider symbol (e.g. │, |, •, /, -)
+# Telemetry segment divider symbol
 separator = │
 
-# Global overlay window opacity percentage (10 to 100)
+# Global overlay opacity percentage (10 to 100, hardware alpha-blended)
 opacity = 100
+
+# Show icon in Linux system tray / top panel indicator (1 = enabled, 0 = disabled)
+show_tray_icon = 0
 
 [Telemetry]
 # Polling interval in milliseconds (suspends automatically when display sleeps)
 refresh_interval_ms = 1000
 
-# Selected GPU device index:
-#   0 (default) = Primary display adapter (GPU driving the primary desktop display)
-#   1           = Secondary adapter (e.g. discrete rendering GPU or secondary display adapter)
-#   0, 1        = Simultaneous side-by-side multi-GPU monitoring (e.g. │ GPU0 ... │ GPU1 ... │)
-#   all         = Monitor all discovered physical GPUs simultaneously
+# Selected GPU target: 0 (primary), 1 (secondary), "0, 1" (multi-GPU side-by-side), or "all"
 gpu_index = 0
 
-# VRAM capacity reporting mode:
-#   physical (default) = Gross hardware silicon capacity (e.g. 16.0 GB), matching retail packaging and Task Manager
-#   usable             = Net allocatable capacity excluding driver reservations (e.g. 15.6 GB, AI/CUDA OOM guard)
+# VRAM reporting mode: physical (hardware silicon capacity) or usable (allocatable net)
 vram_mode = physical
 
-# Metric segment display ordering (comma-separated list of CPU, GPU, RAM, NET)
+# Metric ordering (comma-separated list of CPU, GPU, RAM, NET)
 order = CPU, GPU, RAM, NET
 
 # Subsystem display toggles (1 = enabled, 0 = disabled)
@@ -258,18 +441,21 @@ show_net = 0
 show_gpu_temp = 1
 show_gpu_power = 1
 show_gpu_fan = 1
+
+# Memory format: 1 = used/total (12.3/16GB), 0 = used only (12.3GB)
 show_max_memory = 1
+
+# Hide offline hardware subsystems (1 = hide, 0 = show unavailable)
 hide_offline_metrics = 0
 
-# Optional per-adapter overrides (e.g. detailed primary card, compact AI compute card)
+# Optional per-adapter overrides:
 # [GPU0]
 # show_temp = 1
 # show_power = 1
 #
 # [GPU1]
-# show_temp = 1
+# show_temp = 0
 # show_power = 0
-# show_fan = 0
 ```
 
 Consult [`config.example.ini`](config.example.ini) for full documentation of every available parameter.
@@ -278,9 +464,9 @@ Consult [`config.example.ini`](config.example.ini) for full documentation of eve
 
 ## Known Constraints & Intentional Trade-Offs
 
-1. **CPU Temperature Omission:** Windows provides no native unprivileged user-mode API for CPU package thermals. Conventional tools achieve this by bundling vulnerable ring-0 kernel drivers (e.g. `WinRing0`) to execute privileged Model-Specific Register (MSR) instructions. Because these third-party drivers expose severe kernel read/write vulnerabilities and are actively blacklisted by modern anti-cheat systems, BareStats intentionally operates strictly in user space to guarantee system stability and anti-cheat compliance.
+1. **CPU Temperature Omission:** Windows and macOS provide no public unprivileged user-mode API for CPU package thermals. Conventional tools achieve this by bundling vulnerable ring-0 kernel drivers (e.g. `WinRing0` on Windows) or requiring root daemons to execute privileged Model-Specific Register (MSR) / SMC instructions. Because these privileged drivers expose severe kernel read/write vulnerabilities and trigger anti-cheat bans, BareStats intentionally operates 100% in unprivileged user space to guarantee system stability and anti-cheat compliance. On Linux, `/sys/class/hwmon` is similarly omitted from default core sampling to maintain uniform unprivileged execution across heterogeneous motherboards.
 2. **Sub-1GB Memory Formatting:** Integrated GPU shared memory segments that report below 1 GB (e.g., dynamic 128 MB or 512 MB boot allocations) automatically scale to integer megabytes (`MB`) rather than truncating to `0.0GB`.
-3. **Exclusive Fullscreen Mode:** Like all native Windows layered desktop surfaces, BareStats renders above desktop windows and **Borderless Windowed** applications. Traditional exclusive fullscreen mode grants games direct scan-out access to the display hardware; running games in Borderless Windowed mode allows the overlay to remain persistently visible on top.
+3. **Exclusive Fullscreen Mode:** Like all native desktop layered surfaces across Windows, Linux, and macOS, BareStats renders above desktop windows and **Borderless Windowed** applications. Traditional exclusive fullscreen mode grants games direct exclusive scan-out access to display hardware; running games in Borderless Windowed mode allows the overlay to remain persistently visible on top.
 
 ---
 
@@ -295,57 +481,117 @@ Consult [`config.example.ini`](config.example.ini) for full documentation of eve
 
 ## Building from Source
 
-### Build Prerequisites (Developers & Contributors Only)
+### Build Prerequisites
 
-- Windows 10 or Windows 11 (x64)
-- Microsoft Visual Studio 2022+ (with C++ Desktop Development workload)
+#### Linux (Ubuntu / Debian / Linux Mint)
+```bash
+sudo apt update
+sudo apt install -y build-essential cmake ninja-build pkg-config \
+  libx11-dev libxfixes-dev libxcomposite-dev libxrender-dev libcairo2-dev libwayland-dev rpm zstd
+```
+
+#### Linux (Fedora / RHEL / CentOS)
+```bash
+sudo dnf install -y gcc-c++ cmake ninja-build pkgconf-pkg-config \
+  libX11-devel libXfixes-devel libXcomposite-devel libXrender-devel cairo-devel wayland-devel rpm-build
+```
+
+#### Linux (Arch Linux / Manjaro)
+```bash
+sudo pacman -S --needed base-devel cmake ninja pkgconf cairo libx11 libxfixes wayland
+```
+
+#### macOS (Apple Silicon & Intel)
+- Xcode Command Line Tools (`xcode-select --install`)
+- CMake 3.20 or newer
+- Ninja build system (`brew install ninja`)
+
+#### Windows (10 or 11)
+- Microsoft Visual Studio 2022+ (with "Desktop development with C++" workload)
 - CMake 3.20 or newer
 - Ninja build system
 
+---
+
 ### Local Compilation
 
+#### Linux Compilation
+```bash
+# Configure release build with Ninja generator
+cmake -B build -S . -G "Ninja" -DCMAKE_BUILD_TYPE=Release
+
+# Compile release binary
+cmake --build build --config Release
+
+# Run automated unit tests
+ctest --test-dir build --output-on-failure
+
+# Execute internal hardware probe / diagnostics
+build/barestats --test
+```
+
+To build all distribution release packages (`.deb`, `.rpm`, `.pkg.tar.zst`, `.tar.gz`, `AppImage`, and raw binary):
+```bash
+bash packaging/build_linux_packages.sh
+```
+
+#### macOS Compilation
+```bash
+# Automated Universal (arm64 + x86_64) application bundle & Drag-and-Drop .dmg package
+./packaging/macos/build_macos.sh
+
+# Or manual configuration via CMake:
+cmake -B build -S . -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DBARESTATS_BUILD_TESTS=ON
+cmake --build build --config Release
+ctest --test-dir build --output-on-failure
+cpack --config build/CPackConfig.cmake -G DragNDrop
+```
+
+#### Windows Compilation
 ```cmd
 # Configure release build with Ninja generator
 cmake -B build -S . -G "Ninja" -DCMAKE_BUILD_TYPE=Release
 
 # Compile release binary
 cmake --build build --config Release
-```
 
-The build produces a single standalone executable (`build/BareStats.exe`, ~240 KB) with embedded multi-resolution icon resources and Per-Monitor V2 DPI manifests.
+# Run automated modular verification suite
+python scripts/run_tests.py
 
-### Automated Diagnostics Suite
-
-Execute from the command prompt to run the internal hardware probe and timing suite:
-
-```cmd
+# Execute internal hardware probe / diagnostics
 build\BareStats.exe --test
 ```
 
----
-
-## Continuous Integration & Release Engineering
-
-BareStats incorporates a multi-runner GitHub Actions matrix (`.github/workflows/ci.yml`) validating compilation, linking, and telemetry execution across clean Microsoft Windows environments:
-
-- `windows-latest` (Windows Server 2025 / Windows 11 runner image)
-- `windows-2022` (Windows Server 2022 runner image)
-
-Every automated CI run executes the comprehensive diagnostic benchmark suite before packaging release artifacts.
+To build the Windows release zip package and SHA-256 checksums:
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging/windows/package_windows.ps1
+```
 
 ---
 
-## Future Architecture & Platform Roadmap
+## Continuous Integration & Verification Matrix
 
-BareStats evolves along a structured architectural roadmap from deep native Windows telemetry to universal cross-platform execution:
+BareStats incorporates an automated GitHub Actions matrix (`.github/workflows/ci.yml`) validating compilation, linking, and packaging across clean environments:
 
-- **v1.0 (Production Core — Completed):** Native unprivileged CPU, memory, NVIDIA GPU, and network throughput overlay with DWM alpha compositing and 0.00% idle dirty-frame bypasses.
-- **v1.1 (Deep Windows Hardware Extensions & Precision VRAM — Completed):** Precision VRAM decoupling (`vram_mode`), native AMD ADL SDK (`atiadlxx.dll`), Intel IGCL (`ControlLib.dll`), universal Windows D3DKMT kernel engine scheduler fallback (`D3DKMTQueryStatistics`), and simultaneous side-by-side multi-GPU monitoring.
-- **v1.2 (Multi-GPU Grid Architecture, Component Island Micro-HWNDs & Per-Adapter Customization — Completed):** User-configurable multi-row grid presentation (`layout = horizontal | grid | custom_grid`), true mathematical matrix grid layouts with cell merging, isolated component island micro-HWND presentation architecture (`grid_mode = islands`) with Win+D resilience, asymmetric per-adapter configuration (`[GPU0]`, `[GPU1]`), and transparent hardware auto-introspection with zero-loss schema migration.
-- **v1.3 (Linux Native Port):** Wayland overlay protocol (`wlr-layer-shell`) and X11 (`XComposite` / `XShape`) native window surfaces backed by unprivileged `/proc/stat`, `/proc/meminfo`, `/sys/class/hwmon`, and Direct Rendering Manager (`/sys/class/drm`) telemetry ingestion, paired directly with the platform-agnostic token formatter pipeline.
-- **v1.4 (macOS Native Port):** Floating status overlay and menu bar status widget implemented in AppKit and Metal, leveraging unprivileged Mach kernel APIs (`host_processor_info`, `vm_statistics64`) and Apple Silicon `IOKit` accelerators for unified GPU memory and engine telemetry.
-- **v1.5 (Specialized AI & Domestic Accelerators on Linux):** Dedicated telemetry connectors for Linux enterprise and domestic accelerator driver stacks, including Moore Threads (MUSA SDK), Huawei Ascend (CANN toolkit), Biren Technology (BI-SDK), and emerging accelerator drivers.
-- **v2.0 (Unified Cross-Platform Core):** Consolidation of Windows, Linux, and macOS implementations into a single unified telemetry abstraction engine sharing 100% of telemetry models, formatting, and configuration parsing.
+- **Linux Build Runner:** `ubuntu-latest` with GCC / Clang, generating native `.deb`, `.rpm`, `.pkg.tar.zst`, `.tar.gz`, `.AppImage`, and raw ELF artifacts with cryptographic SHA-256 verification.
+- **Containerized Multi-Distro Smoke Matrix:** Pre-compiled Linux packages are downloaded and verified inside clean, isolated Docker containers without recompilation:
+  - **Ubuntu 24.04 (`ubuntu:24.04`)**: Verifies `.deb` installation, binary execution, and uninstallation.
+  - **Debian 12 (`debian:bookworm`)**: Verifies Debian `.deb` package manager compatibility.
+  - **Fedora Latest (`fedora:latest`)**: Verifies `.rpm` installation via `dnf` and dynamic library resolution.
+  - **openSUSE Leap (`opensuse/leap:latest`)**: Verifies `.rpm` installation via `zypper`.
+  - **Arch Linux (`archlinux:latest`)**: Verifies `.pkg.tar.zst` installation via `pacman` and rolling-release glibc compatibility.
+  - **Universal Tarball & Raw Binary (`debian:bookworm-slim`)**: Verifies standalone ELF execution and automated `install.sh`/`uninstall.sh` POSIX shell operations.
+- **macOS Build & Test Runner:** `macos-latest` (Apple Silicon) & `macos-13` (Intel x86_64) compiling Universal Binaries, executing native unit test suites, and generating signed Drag-and-Drop `.dmg` distribution archives.
+- **Windows Build & Test Runner:** `windows-latest` & `windows-2022` with MSVC compiler, 35/35 automated unit tests, and CLI execution checks.
+
+---
+
+## Version History & Architectural Milestones
+
+- **v1.0 (Production Core):** Native unprivileged CPU, memory, NVIDIA GPU, and network throughput overlay with DWM alpha compositing and 0.00% idle dirty-frame bypasses.
+- **v1.1 (Deep Windows Hardware Extensions & Precision VRAM):** Precision VRAM decoupling (`vram_mode`), native AMD ADL SDK (`atiadlxx.dll`), Intel IGCL (`ControlLib.dll`), universal Windows D3DKMT kernel engine scheduler fallback (`D3DKMTQueryStatistics`), and simultaneous side-by-side multi-GPU monitoring.
+- **v1.2 (Multi-GPU Grid Architecture, Component Island Micro-HWNDs & Per-Adapter Customization):** User-configurable multi-row grid presentation (`layout = horizontal | grid | custom_grid`), true mathematical matrix grid layouts with cell merging, isolated component island micro-HWND presentation architecture (`grid_mode = islands`) with Win+D resilience, asymmetric per-adapter configuration (`[GPU0]`, `[GPU1]`), and transparent hardware auto-introspection with zero-loss schema migration.
+- **v1.3 (Cross-Platform Linux & macOS Parity):** Complete cross-platform desktop telemetry overlay with native Linux (Cairo/X11, `/proc`, sysfs) and macOS (Cocoa/AppKit, Metal, Mach kernel, IOKit) support, interactive Move Mode with outside-click exit, rolling number startup animations, component island mode (`grid_mode = islands`), single-instance mutex enforcement, and native distribution packaging (Drag-and-Drop `.dmg`, standalone App bundle, Ubuntu/Debian .deb, Fedora .rpm, openSUSE .rpm, Arch Linux .pkg.tar.zst, AppImage, and Universal Tarball).
 
 ---
 

@@ -40,6 +40,7 @@ struct NetworkMetrics {
     uint64_t txBytesPerSec = 0;   // Outbound / upload throughput
     uint64_t totalRxBytes = 0;    // Lifetime received bytes
     uint64_t totalTxBytes = 0;    // Lifetime transmitted bytes
+    std::string primaryAdapterName; // Cross-platform UTF-8 primary adapter name
     std::wstring primaryAdapter;  // Primary active physical gateway adapter name
 };
 

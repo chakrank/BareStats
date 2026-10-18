@@ -1,0 +1,33 @@
+# Maintainer: Chakrank <chakrank@hotmail.com>
+pkgname=barestats
+pkgver=1.3.0
+pkgrel=1
+pkgdesc="BareStats - Ultra-lightweight native system telemetry overlay"
+arch=('x86_64')
+url="https://github.com/chakrank/BareStats"
+license=('MIT')
+depends=('cairo' 'libx11' 'libxfixes')
+optdepends=(
+    'nvidia-utils: NVIDIA GPU hardware telemetry via NVML'
+)
+makedepends=('cmake' 'ninja' 'pkgconf')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cmake -B build -S "$pkgname-$pkgver" \
+        -G "Ninja" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DBARESTATS_BUILD_TESTS=ON
+    cmake --build build --config Release
+}
+
+check() {
+    cd build
+    ctest --output-on-failure
+}
+
+package() {
+    DESTDIR="$pkgdir" cmake --install build
+}

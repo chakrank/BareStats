@@ -1,0 +1,15 @@
+Source: barestats
+Section: utils
+Priority: optional
+Maintainer: Chakrank <chakrank@hotmail.com>
+Build-Depends: debhelper-compat (= 13), cmake, ninja-build, pkg-config, libcairo2-dev, libx11-dev, libxfixes-dev, libxcomposite-dev, libxrender-dev, libwayland-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/chakrank/BareStats
+
+Package: barestats
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libcairo2, libx11-6, libxfixes3, libxcomposite1, libxrender1
+Description: BareStats - Ultra-lightweight native system telemetry overlay
+ BareStats is an unprivileged, ultra-lightweight telemetry overlay delivering
+ real-time CPU, GPU, VRAM, RAM, and network throughput at 0.00% idle duty cycle.
+ Developed by Chakrank.

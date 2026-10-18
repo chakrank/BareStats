@@ -35,6 +35,17 @@ SystemMetrics TelemetryEngine::CollectImmediate() {
     return metrics;
 }
 
+void TelemetryEngine::Start(std::function<void()> onUpdateCallback) {
+    if (isRunning_.load()) return;
+
+    onUpdateCallback_ = std::move(onUpdateCallback);
+    isRunning_.store(true);
+    isSuspended_.store(false);
+
+    workerThread_ = std::thread(&TelemetryEngine::WorkerLoop, this);
+}
+
+#ifdef _WIN32
 void TelemetryEngine::Start(HWND notifyHwnd, UINT notifyMsg) {
     if (isRunning_.load()) return;
 
@@ -45,6 +56,7 @@ void TelemetryEngine::Start(HWND notifyHwnd, UINT notifyMsg) {
 
     workerThread_ = std::thread(&TelemetryEngine::WorkerLoop, this);
 }
+#endif
 
 void TelemetryEngine::Stop() {
     if (!isRunning_.load()) return;
@@ -131,9 +143,15 @@ void TelemetryEngine::WorkerLoop() {
                 latestMetrics_ = sample;
             }
 
+            if (onUpdateCallback_) {
+                onUpdateCallback_();
+            }
+
+#ifdef _WIN32
             if (notifyHwnd_ && notifyMsg_) {
                 PostMessageW(notifyHwnd_, notifyMsg_, 0, 0);
             }
+#endif
         }
 
         uint32_t interval = 1000;

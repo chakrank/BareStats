@@ -1,6 +1,12 @@
 #include "gpu_collector.h"
+
+#ifdef _WIN32
 #include <dxgi1_4.h>
 #include <wrl/client.h>
+#include "nvml_collector.h"
+#include "adl_collector.h"
+#include "igcl_collector.h"
+#include "d3dkmt_collector.h"
 #include <vector>
 #include <string>
 #include <algorithm>
@@ -8,7 +14,6 @@
 using Microsoft::WRL::ComPtr;
 
 namespace BareStats {
-
 
 static std::string WideToUtf8(const wchar_t* wstr) {
     if (!wstr) return "";
@@ -67,53 +72,6 @@ static std::vector<InternalAdapter> EnumerateAdapters() {
     }
 
     return adapters;
-}
-
-std::vector<GpuDeviceInfo> GpuCollector::GetAvailableGpus() {
-    std::vector<GpuDeviceInfo> devices;
-    auto adapters = EnumerateAdapters();
-
-    for (const auto& a : adapters) {
-        GpuDeviceInfo info;
-        info.index = a.globalIndex;
-        info.name = WideToUtf8(a.desc.Description);
-        info.vendorId = a.desc.VendorId;
-        info.deviceId = a.desc.DeviceId;
-        info.dedicatedVideoMemory = a.desc.DedicatedVideoMemory;
-        info.sharedSystemMemory = a.desc.SharedSystemMemory;
-        info.isNvidia = a.isNvidia;
-        info.nvidiaDeviceIndex = a.nvidiaIndex;
-        info.isAmd = a.isAmd;
-        info.amdDeviceIndex = a.amdIndex;
-        info.isIntel = a.isIntel;
-        info.intelDeviceIndex = a.intelIndex;
-        devices.push_back(info);
-    }
-
-    return devices;
-}
-
-GpuCollector::GpuCollector() {
-    auto adapters = EnumerateAdapters();
-    for (const auto& a : adapters) {
-        d3dKmtCollector_.QueryEngineUtilization(a.desc.AdapterLuid);
-    }
-}
-
-GpuCollector::~GpuCollector() = default;
-
-void GpuCollector::Recover() {
-    retryCount_ = 0;
-    nvmlCollector_.Recover();
-    adlCollector_.Recover();
-    igclCollector_.Recover();
-    d3dKmtCollector_.Reset();
-}
-
-void GpuCollector::Shutdown() {
-    nvmlCollector_.Shutdown();
-    adlCollector_.Shutdown();
-    igclCollector_.Shutdown();
 }
 
 static GpuMetrics CollectFromAdapter(const InternalAdapter& target, NvmlCollector& nvmlCollector,
@@ -204,8 +162,7 @@ static GpuMetrics CollectFromAdapter(const InternalAdapter& target, NvmlCollecto
     }
 
     // 5. Universal Windows D3DKMT Engine Utilization Fallback
-    // If vendor SDKs (NVML, ADL, IGCL) did not provide utilization percentage (e.g. Intel UHD / Iris,
-    // AMD APUs without ADL, Qualcomm Snapdragon ARM64, or generic WDDM drivers):
+    // If vendor SDKs (NVML, ADL, IGCL) did not provide utilization percentage:
     if (!metrics.utilizationPercent.has_value() && d3dKmtCollector.IsAvailable()) {
         auto kmtUtil = d3dKmtCollector.QueryEngineUtilization(target.desc.AdapterLuid);
         if (kmtUtil.has_value()) {
@@ -216,36 +173,258 @@ static GpuMetrics CollectFromAdapter(const InternalAdapter& target, NvmlCollecto
     return metrics;
 }
 
-GpuMetrics GpuCollector::Collect(uint32_t deviceIndex) {
-    auto adapters = EnumerateAdapters();
-    if (adapters.empty()) {
-        return GpuMetrics{};
+struct GpuCollector::Impl {
+    NvmlCollector nvmlCollector;
+    AdlCollector adlCollector;
+    IgclCollector igclCollector;
+    D3dKmtCollector d3dKmtCollector;
+    uint32_t retryCount = 0;
+
+    Impl() {
+        auto adapters = EnumerateAdapters();
+        for (const auto& a : adapters) {
+            d3dKmtCollector.QueryEngineUtilization(a.desc.AdapterLuid);
+        }
     }
 
-    uint32_t targetIdx = (deviceIndex < adapters.size()) ? deviceIndex : 0;
-    return CollectFromAdapter(adapters[targetIdx], nvmlCollector_, adlCollector_, igclCollector_, d3dKmtCollector_, retryCount_);
+    void Recover() {
+        retryCount = 0;
+        nvmlCollector.Recover();
+        adlCollector.Recover();
+        igclCollector.Recover();
+        d3dKmtCollector.Reset();
+    }
+
+    void Shutdown() {
+        nvmlCollector.Shutdown();
+        adlCollector.Shutdown();
+        igclCollector.Shutdown();
+    }
+
+    GpuMetrics Collect(uint32_t deviceIndex) {
+        auto adapters = EnumerateAdapters();
+        if (adapters.empty()) {
+            return GpuMetrics{};
+        }
+        uint32_t targetIdx = (deviceIndex < adapters.size()) ? deviceIndex : 0;
+        return CollectFromAdapter(adapters[targetIdx], nvmlCollector, adlCollector, igclCollector, d3dKmtCollector, retryCount);
+    }
+
+    std::vector<GpuMetrics> CollectMultiple(const std::vector<uint32_t>& targetIndices, bool allGpus) {
+        std::vector<GpuMetrics> results;
+        auto adapters = EnumerateAdapters();
+        if (adapters.empty()) {
+            return results;
+        }
+
+        if (allGpus) {
+            for (const auto& a : adapters) {
+                results.push_back(CollectFromAdapter(a, nvmlCollector, adlCollector, igclCollector, d3dKmtCollector, retryCount));
+            }
+        } else {
+            std::vector<uint32_t> effective = targetIndices.empty() ? std::vector<uint32_t>{ 0 } : targetIndices;
+            for (uint32_t idx : effective) {
+                uint32_t targetIdx = (idx < adapters.size()) ? idx : 0;
+                results.push_back(CollectFromAdapter(adapters[targetIdx], nvmlCollector, adlCollector, igclCollector, d3dKmtCollector, retryCount));
+            }
+        }
+
+        return results;
+    }
+};
+
+std::vector<GpuDeviceInfo> GpuCollector::GetAvailableGpus() {
+    std::vector<GpuDeviceInfo> devices;
+    auto adapters = EnumerateAdapters();
+
+    for (const auto& a : adapters) {
+        GpuDeviceInfo info;
+        info.index = a.globalIndex;
+        info.name = WideToUtf8(a.desc.Description);
+        info.vendorId = a.desc.VendorId;
+        info.deviceId = a.desc.DeviceId;
+        info.dedicatedVideoMemory = a.desc.DedicatedVideoMemory;
+        info.sharedSystemMemory = a.desc.SharedSystemMemory;
+        info.isNvidia = a.isNvidia;
+        info.nvidiaDeviceIndex = a.nvidiaIndex;
+        info.isAmd = a.isAmd;
+        info.amdDeviceIndex = a.amdIndex;
+        info.isIntel = a.isIntel;
+        info.intelDeviceIndex = a.intelIndex;
+        devices.push_back(info);
+    }
+
+    return devices;
+}
+
+} // namespace BareStats
+
+#elif defined(__APPLE__)
+
+#include "macos/macos_gpu_collector.h"
+
+namespace BareStats {
+
+struct GpuCollector::Impl {
+    MacosGpuCollector macosCollector;
+
+    Impl() = default;
+
+    void Recover() {
+        macosCollector.Recover();
+    }
+
+    void Shutdown() {
+        macosCollector.Shutdown();
+    }
+
+    GpuMetrics Collect(uint32_t deviceIndex) {
+        return macosCollector.Collect(deviceIndex);
+    }
+
+    std::vector<GpuMetrics> CollectMultiple(const std::vector<uint32_t>& targetIndices, bool allGpus) {
+        return macosCollector.CollectMultiple(targetIndices, allGpus);
+    }
+};
+
+std::vector<GpuDeviceInfo> GpuCollector::GetAvailableGpus() {
+    return MacosGpuCollector::GetAvailableGpus();
+}
+
+} // namespace BareStats
+
+#else // Linux
+
+#include "nvml_collector.h"
+#include "linux_sysfs_gpu_collector.h"
+#include <algorithm>
+
+namespace BareStats {
+
+struct GpuCollector::Impl {
+    LinuxSysfsGpuCollector sysfsCollector;
+    NvmlCollector nvmlCollector;
+    uint32_t retryCount = 0;
+
+    Impl() = default;
+
+    void Recover() {
+        retryCount = 0;
+        nvmlCollector.Recover();
+    }
+
+    void Shutdown() {
+        nvmlCollector.Shutdown();
+    }
+
+    GpuMetrics Collect(uint32_t deviceIndex) {
+        auto devices = GpuCollector::GetAvailableGpus();
+        if (devices.empty()) {
+            return GpuMetrics{};
+        }
+
+        uint32_t targetIdx = (deviceIndex < devices.size()) ? deviceIndex : 0;
+        const auto& target = devices[targetIdx];
+
+        GpuMetrics metrics;
+        if (target.isNvidia) {
+            if (!nvmlCollector.IsAvailable()) {
+                retryCount++;
+                if (retryCount >= 10) {
+                    retryCount = 0;
+                    nvmlCollector.Recover();
+                }
+            } else {
+                retryCount = 0;
+            }
+
+            if (nvmlCollector.IsAvailable()) {
+                if (nvmlCollector.Collect(metrics, target.nvidiaDeviceIndex)) {
+                    return metrics;
+                }
+            }
+        }
+
+        // Sysfs fallback (AMD, Intel, universal DRM)
+        if (sysfsCollector.Collect(target.index, metrics)) {
+            return metrics;
+        }
+
+        return metrics;
+    }
+
+    std::vector<GpuMetrics> CollectMultiple(const std::vector<uint32_t>& targetIndices, bool allGpus) {
+        std::vector<GpuMetrics> results;
+        auto devices = GpuCollector::GetAvailableGpus();
+        if (devices.empty()) {
+            return results;
+        }
+
+        if (allGpus) {
+            for (size_t i = 0; i < devices.size(); ++i) {
+                results.push_back(Collect(static_cast<uint32_t>(i)));
+            }
+        } else {
+            std::vector<uint32_t> effective = targetIndices.empty() ? std::vector<uint32_t>{ 0 } : targetIndices;
+            for (uint32_t idx : effective) {
+                results.push_back(Collect(idx));
+            }
+        }
+
+        return results;
+    }
+};
+
+std::vector<GpuDeviceInfo> GpuCollector::GetAvailableGpus() {
+    std::vector<GpuDeviceInfo> devices;
+    LinuxSysfsGpuCollector sysfs;
+    auto cards = sysfs.EnumerateCards();
+
+    uint32_t nvidiaCount = 0;
+    uint32_t amdCount = 0;
+    uint32_t intelCount = 0;
+
+    for (const auto& card : cards) {
+        GpuDeviceInfo info;
+        info.index = card.index;
+        info.name = card.name.empty() ? card.cardName : card.name;
+        info.vendorId = card.vendorId;
+        info.deviceId = card.deviceId;
+        info.isNvidia = card.isNvidia;
+        info.nvidiaDeviceIndex = info.isNvidia ? (nvidiaCount++) : 0;
+        info.isAmd = card.isAmd;
+        info.amdDeviceIndex = info.isAmd ? (amdCount++) : 0;
+        info.isIntel = card.isIntel;
+        info.intelDeviceIndex = info.isIntel ? (intelCount++) : 0;
+        devices.push_back(info);
+    }
+
+    return devices;
+}
+
+} // namespace BareStats
+
+#endif // _WIN32
+
+namespace BareStats {
+
+GpuCollector::GpuCollector() : impl_(std::make_unique<Impl>()) {}
+GpuCollector::~GpuCollector() = default;
+
+GpuMetrics GpuCollector::Collect(uint32_t deviceIndex) {
+    return impl_->Collect(deviceIndex);
 }
 
 std::vector<GpuMetrics> GpuCollector::CollectMultiple(const std::vector<uint32_t>& targetIndices, bool allGpus) {
-    std::vector<GpuMetrics> results;
-    auto adapters = EnumerateAdapters();
-    if (adapters.empty()) {
-        return results;
-    }
+    return impl_->CollectMultiple(targetIndices, allGpus);
+}
 
-    if (allGpus) {
-        for (const auto& a : adapters) {
-            results.push_back(CollectFromAdapter(a, nvmlCollector_, adlCollector_, igclCollector_, d3dKmtCollector_, retryCount_));
-        }
-    } else {
-        std::vector<uint32_t> effective = targetIndices.empty() ? std::vector<uint32_t>{ 0 } : targetIndices;
-        for (uint32_t idx : effective) {
-            uint32_t targetIdx = (idx < adapters.size()) ? idx : 0;
-            results.push_back(CollectFromAdapter(adapters[targetIdx], nvmlCollector_, adlCollector_, igclCollector_, d3dKmtCollector_, retryCount_));
-        }
-    }
+void GpuCollector::Recover() {
+    impl_->Recover();
+}
 
-    return results;
+void GpuCollector::Shutdown() {
+    impl_->Shutdown();
 }
 
 } // namespace BareStats

@@ -1,11 +1,6 @@
 #pragma once
 
 #include "metrics.h"
-#include "nvml_collector.h"
-#include "adl_collector.h"
-#include "igcl_collector.h"
-#include "d3dkmt_collector.h"
-#include <windows.h>
 #include <memory>
 #include <vector>
 #include <string>
@@ -40,11 +35,8 @@ public:
     static std::vector<GpuDeviceInfo> GetAvailableGpus();
 
 private:
-    NvmlCollector nvmlCollector_;
-    AdlCollector adlCollector_;
-    IgclCollector igclCollector_;
-    D3dKmtCollector d3dKmtCollector_;
-    uint32_t retryCount_ = 0;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace BareStats

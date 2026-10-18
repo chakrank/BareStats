@@ -1,6 +1,25 @@
 #include "nvml_collector.h"
 #include <iostream>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#define LOAD_LIB(name) LoadLibraryA(name)
+#define GET_SYM(handle, name) GetProcAddress(static_cast<HMODULE>(handle), name)
+#define FREE_LIB(handle) FreeLibrary(static_cast<HMODULE>(handle))
+#else
+#include <dlfcn.h>
+#include <cstdlib>
+#define LOAD_LIB(name) dlopen(name, RTLD_LAZY | RTLD_LOCAL)
+#define GET_SYM(handle, name) dlsym(handle, name)
+#define FREE_LIB(handle) dlclose(handle)
+#endif
+
 namespace BareStats {
 
 struct NvmlUtilization {
@@ -35,23 +54,39 @@ bool NvmlCollector::LoadNvml(const char* customDllPath) {
         customDllPath_ = customDllPath;
     }
 
+#ifdef _WIN32
     if (!customDllPath_.empty()) {
-        nvmlDll_ = LoadLibraryA(customDllPath_.c_str());
+        nvmlDll_ = LOAD_LIB(customDllPath_.c_str());
     } else {
         char envBuf[MAX_PATH];
         DWORD len = GetEnvironmentVariableA("BARESTATS_MOCK_NVML_DLL", envBuf, MAX_PATH);
         if (len > 0 && len < MAX_PATH) {
-            nvmlDll_ = LoadLibraryA(envBuf);
+            nvmlDll_ = LOAD_LIB(envBuf);
         } else {
-            nvmlDll_ = LoadLibraryA("nvml.dll");
+            nvmlDll_ = LOAD_LIB("nvml.dll");
             if (!nvmlDll_) {
-                nvmlDll_ = LoadLibraryA("C:\\Windows\\System32\\nvml.dll");
+                nvmlDll_ = LOAD_LIB("C:\\Windows\\System32\\nvml.dll");
             }
             if (!nvmlDll_) {
-                nvmlDll_ = LoadLibraryA("C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvml.dll");
+                nvmlDll_ = LOAD_LIB("C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvml.dll");
             }
         }
     }
+#else
+    if (!customDllPath_.empty()) {
+        nvmlDll_ = LOAD_LIB(customDllPath_.c_str());
+    } else {
+        const char* envMock = std::getenv("BARESTATS_MOCK_NVML_SO");
+        if (envMock && envMock[0] != '\0') {
+            nvmlDll_ = LOAD_LIB(envMock);
+        } else {
+            nvmlDll_ = LOAD_LIB("libnvidia-ml.so.1");
+            if (!nvmlDll_) {
+                nvmlDll_ = LOAD_LIB("libnvidia-ml.so");
+            }
+        }
+    }
+#endif
 
     if (!nvmlDll_) {
         isAvailable_ = false;
@@ -59,34 +94,34 @@ bool NvmlCollector::LoadNvml(const char* customDllPath) {
     }
 
     // Resolve functions
-    fnNvmlInit_ = (nvmlInit_t)GetProcAddress(nvmlDll_, "nvmlInit_v2");
+    fnNvmlInit_ = (nvmlInit_t)GET_SYM(nvmlDll_, "nvmlInit_v2");
     if (!fnNvmlInit_) {
-        fnNvmlInit_ = (nvmlInit_t)GetProcAddress(nvmlDll_, "nvmlInit");
+        fnNvmlInit_ = (nvmlInit_t)GET_SYM(nvmlDll_, "nvmlInit");
     }
 
-    fnNvmlShutdown_ = (nvmlShutdown_t)GetProcAddress(nvmlDll_, "nvmlShutdown");
+    fnNvmlShutdown_ = (nvmlShutdown_t)GET_SYM(nvmlDll_, "nvmlShutdown");
     
-    fnNvmlDeviceGetCount_ = (nvmlDeviceGetCount_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetCount_v2");
+    fnNvmlDeviceGetCount_ = (nvmlDeviceGetCount_t)GET_SYM(nvmlDll_, "nvmlDeviceGetCount_v2");
     if (!fnNvmlDeviceGetCount_) {
-        fnNvmlDeviceGetCount_ = (nvmlDeviceGetCount_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetCount");
+        fnNvmlDeviceGetCount_ = (nvmlDeviceGetCount_t)GET_SYM(nvmlDll_, "nvmlDeviceGetCount");
     }
 
-    fnNvmlDeviceGetHandleByIndex_ = (nvmlDeviceGetHandleByIndex_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetHandleByIndex_v2");
+    fnNvmlDeviceGetHandleByIndex_ = (nvmlDeviceGetHandleByIndex_t)GET_SYM(nvmlDll_, "nvmlDeviceGetHandleByIndex_v2");
     if (!fnNvmlDeviceGetHandleByIndex_) {
-        fnNvmlDeviceGetHandleByIndex_ = (nvmlDeviceGetHandleByIndex_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetHandleByIndex");
+        fnNvmlDeviceGetHandleByIndex_ = (nvmlDeviceGetHandleByIndex_t)GET_SYM(nvmlDll_, "nvmlDeviceGetHandleByIndex");
     }
 
-    fnNvmlDeviceGetName_ = (nvmlDeviceGetName_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetName");
-    fnNvmlDeviceGetUtilizationRates_ = (nvmlDeviceGetUtilizationRates_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetUtilizationRates");
-    fnNvmlDeviceGetMemoryInfo_ = (nvmlDeviceGetMemoryInfo_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetMemoryInfo");
-    fnNvmlDeviceGetMemoryInfo_v2_ = (nvmlDeviceGetMemoryInfo_v2_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetMemoryInfo_v2");
-    fnNvmlDeviceGetTemperature_ = (nvmlDeviceGetTemperature_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetTemperature");
-    fnNvmlDeviceGetPowerUsage_ = (nvmlDeviceGetPowerUsage_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetPowerUsage");
-    fnNvmlDeviceGetFanSpeed_ = (nvmlDeviceGetFanSpeed_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetFanSpeed");
-    fnNvmlDeviceGetFanSpeed_v2_ = (nvmlDeviceGetFanSpeed_v2_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetFanSpeed_v2");
-    fnNvmlDeviceGetEnforcedPowerLimit_ = (nvmlDeviceGetEnforcedPowerLimit_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetEnforcedPowerLimit");
-    fnNvmlDeviceGetPowerManagementLimit_ = (nvmlDeviceGetPowerManagementLimit_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetPowerManagementLimit");
-    fnNvmlDeviceGetTemperatureThreshold_ = (nvmlDeviceGetTemperatureThreshold_t)GetProcAddress(nvmlDll_, "nvmlDeviceGetTemperatureThreshold");
+    fnNvmlDeviceGetName_ = (nvmlDeviceGetName_t)GET_SYM(nvmlDll_, "nvmlDeviceGetName");
+    fnNvmlDeviceGetUtilizationRates_ = (nvmlDeviceGetUtilizationRates_t)GET_SYM(nvmlDll_, "nvmlDeviceGetUtilizationRates");
+    fnNvmlDeviceGetMemoryInfo_ = (nvmlDeviceGetMemoryInfo_t)GET_SYM(nvmlDll_, "nvmlDeviceGetMemoryInfo");
+    fnNvmlDeviceGetMemoryInfo_v2_ = (nvmlDeviceGetMemoryInfo_v2_t)GET_SYM(nvmlDll_, "nvmlDeviceGetMemoryInfo_v2");
+    fnNvmlDeviceGetTemperature_ = (nvmlDeviceGetTemperature_t)GET_SYM(nvmlDll_, "nvmlDeviceGetTemperature");
+    fnNvmlDeviceGetPowerUsage_ = (nvmlDeviceGetPowerUsage_t)GET_SYM(nvmlDll_, "nvmlDeviceGetPowerUsage");
+    fnNvmlDeviceGetFanSpeed_ = (nvmlDeviceGetFanSpeed_t)GET_SYM(nvmlDll_, "nvmlDeviceGetFanSpeed");
+    fnNvmlDeviceGetFanSpeed_v2_ = (nvmlDeviceGetFanSpeed_v2_t)GET_SYM(nvmlDll_, "nvmlDeviceGetFanSpeed_v2");
+    fnNvmlDeviceGetEnforcedPowerLimit_ = (nvmlDeviceGetEnforcedPowerLimit_t)GET_SYM(nvmlDll_, "nvmlDeviceGetEnforcedPowerLimit");
+    fnNvmlDeviceGetPowerManagementLimit_ = (nvmlDeviceGetPowerManagementLimit_t)GET_SYM(nvmlDll_, "nvmlDeviceGetPowerManagementLimit");
+    fnNvmlDeviceGetTemperatureThreshold_ = (nvmlDeviceGetTemperatureThreshold_t)GET_SYM(nvmlDll_, "nvmlDeviceGetTemperatureThreshold");
 
     if (!fnNvmlInit_ || !fnNvmlDeviceGetHandleByIndex_) {
         UnloadNvml();
@@ -108,7 +143,7 @@ void NvmlCollector::UnloadNvml() {
         fnNvmlShutdown_();
     }
     if (nvmlDll_) {
-        FreeLibrary(nvmlDll_);
+        FREE_LIB(nvmlDll_);
         nvmlDll_ = nullptr;
     }
     isAvailable_ = false;

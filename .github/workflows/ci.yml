@@ -9,8 +9,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-verify:
-    name: Build & Verify (${{ matrix.os }})
+  build-and-verify-windows:
+    name: Build & Verify Windows (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -23,10 +23,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup MSVC Developer Environment
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Setup Ninja Build System
-        uses: ashutoshvarma/setup-ninja@master
+        uses: TheMrMilchmann/setup-msvc-dev@v3
+        with:
+          arch: x64
 
       - name: Configure CMake
         run: |
@@ -46,20 +45,258 @@ jobs:
         run: |
           ctest --test-dir build --output-on-failure
 
-      - name: Generate SHA-256 Checksum
+      - name: Package Windows Release Archive
         shell: powershell
         run: |
-          $hash = (Get-FileHash -Path build/BareStats.exe -Algorithm SHA256).Hash
-          Write-Output "BareStats.exe SHA-256: $hash"
-          "$hash  BareStats.exe" | Out-File -FilePath build/BareStats.exe.sha256 -Encoding ascii
+          powershell -ExecutionPolicy Bypass -File packaging/windows/package_windows.ps1
 
-      - name: Upload Release Artifacts
+      - name: Upload Windows Artifacts
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: BareStats-Windows-x64
+          name: windows-release
           path: |
             build/BareStats.exe
             build/BareStats.exe.sha256
-            build/BareStatsTests.exe
+            build/BareStats-v1.3.0-Windows-x64.zip
+            build/BareStats-v1.3.0-Windows-x64.zip.sha256
           if-no-files-found: error
+
+  build-linux-packages:
+    name: Build Linux Release Packages & Test Suite
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Build Tools and Packaging Utilities
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build pkg-config \
+            libx11-dev libxfixes-dev libxcomposite-dev libxrender-dev \
+            libcairo2-dev libwayland-dev rpm zstd file
+
+      - name: Execute Automated Verification Test Suite
+        run: |
+          cmake -B /tmp/barestats_build -S . -G "Ninja" -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/barestats_build --config Release
+          ctest --test-dir /tmp/barestats_build --output-on-failure
+
+      - name: Build All Linux Packages & Checksums
+        run: |
+          bash packaging/build_linux_packages.sh
+          ls -la build/linux/
+
+      - name: Verify Generated Checksums
+        working-directory: build/linux
+        run: |
+          sha256sum --check SHA256SUMS
+
+      - name: Upload Linux Package Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: build/linux/*
+          if-no-files-found: error
+
+  test-distro-matrix:
+    name: ${{ matrix.distro.name }} (${{ matrix.distro.type }})
+    needs: build-linux-packages
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.distro.image }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - name: Ubuntu 24.04 (Noble)
+            image: ubuntu:24.04
+            type: deb
+          - name: Debian 12 (Bookworm)
+            image: debian:bookworm
+            type: deb
+          - name: Fedora Latest
+            image: fedora:latest
+            type: rpm-dnf
+          - name: openSUSE Leap
+            image: opensuse/leap:latest
+            type: rpm-zypper
+          - name: Arch Linux
+            image: archlinux:latest
+            type: arch
+          - name: Universal Tarball & Raw Binary
+            image: debian:bookworm-slim
+            type: universal
+
+    steps:
+      - name: Download Built Linux Packages
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: packages/
+
+      - name: Verify Package Contents
+        run: |
+          ls -la packages/
+
+      - name: Smoke Test Debian / Ubuntu (.deb)
+        if: matrix.distro.type == 'deb'
+        run: |
+          apt-get update
+          apt-get install -y ./packages/barestats_*_amd64.deb
+          command -v barestats
+          /usr/bin/barestats --test
+          apt-get remove -y barestats
+          if command -v barestats; then exit 1; fi
+
+      - name: Smoke Test Fedora (.rpm via DNF)
+        if: matrix.distro.type == 'rpm-dnf'
+        run: |
+          dnf install -y ./packages/barestats-*.x86_64.rpm
+          command -v barestats
+          /usr/bin/barestats --test
+          dnf remove -y barestats
+          if command -v barestats; then exit 1; fi
+
+      - name: Smoke Test openSUSE (.rpm via Zypper)
+        if: matrix.distro.type == 'rpm-zypper'
+        run: |
+          zypper --non-interactive --no-gpg-checks install -y ./packages/barestats-*.x86_64.rpm
+          command -v barestats
+          /usr/bin/barestats --test
+          zypper --non-interactive remove -y barestats
+          if command -v barestats; then exit 1; fi
+
+      - name: Smoke Test Arch Linux (.pkg.tar.zst)
+        if: matrix.distro.type == 'arch'
+        run: |
+          pacman -Sy --noconfirm cairo libx11 libxfixes
+          pacman -U --noconfirm ./packages/barestats-*.pkg.tar.zst
+          command -v barestats
+          /usr/bin/barestats --test
+          pacman -R --noconfirm barestats
+          if command -v barestats; then exit 1; fi
+
+      - name: Smoke Test Universal Tarball and Raw ELF Executable
+        if: matrix.distro.type == 'universal'
+        run: |
+          apt-get update
+          apt-get install -y libcairo2 libx11-6 libxfixes3 tar
+          # Test Raw Standalone Executable
+          chmod +x ./packages/barestats-linux-x86_64
+          ./packages/barestats-linux-x86_64 --test
+          # Test Universal Tarball with install.sh / uninstall.sh
+          tar -xzf ./packages/barestats-*-linux-x86_64.tar.gz
+          cd barestats-*-linux-x86_64
+          ./install.sh
+          command -v barestats
+          /usr/local/bin/barestats --test
+          ./uninstall.sh
+          if command -v barestats; then exit 1; fi
+
+  build-and-verify-macos:
+    name: Build & Verify macOS (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ macos-latest ]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Ninja Build Tool
+        run: |
+          brew install ninja
+
+      - name: Configure CMake (Universal arm64 + x86_64)
+        run: |
+          cmake -B build -S . -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DBARESTATS_BUILD_TESTS=ON
+
+      - name: Compile Release Application Bundle & Tests
+        run: |
+          cmake --build build --config Release
+          chmod +x build/BareStats.app/Contents/MacOS/BareStats
+          codesign --force --deep --sign - build/BareStats.app || true
+
+      - name: Execute Automated Test Suite
+        run: |
+          ctest --test-dir build --output-on-failure
+
+      - name: Generate Drag-and-Drop DMG Distribution Package
+        working-directory: build
+        run: |
+          cpack -G DragNDrop
+
+      - name: Prepare macOS Distribution Artifacts
+        run: |
+          mkdir -p macos-artifacts
+          cp -f build/*.dmg macos-artifacts/ || true
+          tar -czf macos-artifacts/BareStats-macOS-Universal.app.tar.gz -C build BareStats.app
+          cd macos-artifacts
+          shasum -a 256 * > SHA256SUMS.txt
+          cp SHA256SUMS.txt SHA256SUMS
+
+      - name: Upload macOS Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-packages
+          path: macos-artifacts/*
+          if-no-files-found: error
+
+  publish-release:
+    name: Prepare Draft Release on GitHub
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build-and-verify-windows
+      - build-linux-packages
+      - test-distro-matrix
+      - build-and-verify-macos
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Create Staging Directory
+        run: mkdir -p release_assets
+
+      - name: Download Windows Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: release_assets/
+
+      - name: Download Linux Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: release_assets/
+
+      - name: Download macOS Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-packages
+          path: release_assets/
+
+      - name: Generate Unified Checksums
+        working-directory: release_assets
+        run: |
+          rm -f SHA256SUMS SHA256SUMS.txt
+          sha256sum * > SHA256SUMS.txt
+          cp SHA256SUMS.txt SHA256SUMS
+          cat SHA256SUMS.txt
+
+      - name: Create Draft Release on GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "BareStats ${{ github.ref_name }}"
+          draft: true
+          prerelease: false
+          generate_release_notes: true
+          files: release_assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

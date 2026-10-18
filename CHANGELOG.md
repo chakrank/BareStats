@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-10-18
+
+### Added
+- **macOS Native Telemetry & Overlay Engine:**
+  - Full native port supporting both **Apple Silicon (`arm64`)** and **Intel (`x86_64`)** via Universal Binaries.
+  - **Unprivileged Native Telemetry Pipeline (`src/metrics/macos/`):**
+    - **CPU:** Mach kernel `host_statistics64(HOST_CPU_LOAD_INFO)` computing aggregate kernel, user, and idle tick deltas across all cores.
+    - **RAM:** Mach virtual memory subsystem `host_statistics64(HOST_VM_INFO64)` with precise App + Wired + Compressed memory calculations.
+    - **GPU & Unified Memory:** Direct Metal device query (`MTLCopyAllDevices`) for real-time allocated VRAM tracking (`currentAllocatedSize`) combined with unprivileged IOKit `IOAccelerator` `PerformanceStatistics` for device compute load percentage. Native discrete GPU support for Intel/AMD Macs.
+    - **Network:** BSD sockets `getifaddrs` with automatic loopback, virtual, and tunnel interface filtering, and `sysctl(NET_RT_DUMP)` default gateway routing lookup.
+  - **Native Cocoa/AppKit Floating Overlay Window:**
+    - Custom borderless `NSPanel` configured at `kCGFloatingWindowLevel` with `.ignoresMouseEvents = YES` for true OS-level click-through transparency.
+    - Hardware-accelerated 2D rasterization using CoreGraphics and CoreText with dirty-frame hash bypasses (FNV-1a).
+    - Mathematical Ease-Out Quadratic rolling number startup animation at 60 Hz.
+    - Multi-display Component Island Mode (`grid_mode = islands`) distributed seamlessly across connected `NSScreen`s.
+  - **macOS Menu Bar Status Item (`NSStatusItem`):**
+    - Custom vector template icon dynamically adapting to macOS light and dark menu bar themes.
+    - Comprehensive control menu: Toggle Reposition Mode, Presets (Bottom Center, Top Right, Top Left, etc.), Toggle Visibility, Reload Config, and Exit.
+    - Accessory process mode (`LSUIElement = true` / `NSApplicationActivationPolicyAccessory`) running unobtrusively in the menu bar without occupying Dock or `Cmd+Tab` switcher space.
+  - **Interactive Reposition Mode:**
+    - Live mouse drag repositioning with golden bounding guide, click-outside monitor (`NSEvent` global/local monitoring), and `Esc` key cancellation.
+  - **Single-Instance Enforcement & Local IPC:**
+    - POSIX `flock` file locking on `barestats.lock` with local UNIX domain socket IPC (`barestats.sock`).
+    - Seamless CLI command forwarding (`--toggle`, `--move`, `--preset`, `--reload`, `--quit`, `--test`).
+  - **Application Bundle & Packaging:**
+    - Native standalone `BareStats.app` bundle generation with embedded `Info.plist`.
+    - Drag-and-Drop `.dmg` packaging via CPack (`DragNDrop` generator) and standalone build script (`packaging/macos/build_macos.sh`).
+    - CI build and verification matrix running on `macos-latest` (Apple Silicon) and `macos-13` (Intel x86_64).
+- **Linux Cross-Platform Parity & Multi-Distribution Packaging:**
+  - Native Linux overlay using X11 / Cairo 32-bit ARGB 100% transparent surface with XFixes shape input passthrough.
+  - Unprivileged telemetry engine via `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `/sys/class/drm`, and `/sys/class/hwmon`.
+  - Single-instance POSIX PID mutex and file-locking enforcement.
+  - Interactive Move Mode with amber bounding guide and click-outside exit.
+  - Mathematical Ease-Out Quadratic rolling number startup animation.
+  - Multi-window Component Island Mode (`grid_mode = islands`) across multi-monitor topologies.
+  - Comprehensive Linux packaging pipeline: `.deb` (Debian/Ubuntu), `.rpm` (Fedora/openSUSE), `.pkg.tar.zst` (Arch Linux), universal AppImage, portable `.tar.gz`, and stripped standalone ELF binaries.
+  - Automated Docker smoke test matrix verifying package installation, execution, and cleanup across Ubuntu 24.04, Debian 12, Fedora, openSUSE Leap, and Arch Linux.
+- **Windows & Cross-Platform Engine Enhancements:**
+  - Expanded automated verification test suite (`BareStatsTests`) to 35 comprehensive test cases covering hardware collectors, synthetic driver mocks (NVML, ADL, IGCL), synthetic Linux procfs/sysfs parsers, formatting math, true matrix grid layouts, component island positioning, and configuration migration.
+  - Hardened cross-platform compilation barriers, ensuring zero-warning compilation across MSVC (Windows), GCC/Clang (Linux), and Apple Clang (macOS).
+  - Added Windows automated release packaging script (`packaging/windows/package_windows.ps1`) generating cryptographically verified SHA-256 manifests.
+  - Synchronized Windows release archive (`BareStats-v1.3.0-Windows-x64.zip`) and executable (`BareStats.exe`) with updated documentation and example configurations.
+
 ## [1.2.0] - 2026-10-14
 
 ### Added

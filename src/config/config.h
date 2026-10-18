@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../overlay/monitor_helper.h"
-#include <windows.h>
+#include "../util/geometry.h"
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -79,6 +79,7 @@ struct AppConfig {
     bool enableDynamicColors = true;
     bool dropShadow = true;
     int opacity = 100;                             // Global opacity in % (10 to 100, default: 100)
+    bool showTrayIcon = false;                     // Show system tray / panel icon on Linux (default: false to avoid taskbar clutter)
     std::wstring separator = L"\x2502";            // Telemetry divider symbol (default: │)
 
     uint32_t refreshIntervalMs = 1000;
@@ -123,7 +124,7 @@ struct AppConfig {
 };
 
 // Schema versioning: MAJOR * 100 + MINOR * 10 (e.g. v1.0 = 100, v1.1 = 110, v1.2 = 120, v1.3 = 130)
-constexpr int CURRENT_CONFIG_SCHEMA_VERSION = 120;
+constexpr int CURRENT_CONFIG_SCHEMA_VERSION = 130;
 
 class ConfigManager {
 public:

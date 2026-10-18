@@ -4,7 +4,7 @@
 #include "overlay_window.h"
 #include "monitor_helper.h"
 #include "../util/formatter.h"
-#include "../../resources/resource.h"
+#include "../../resources/windows/resource.h"
 #include <windows.h>
 #include <shellapi.h>
 #include <dwmapi.h>

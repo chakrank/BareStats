@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
+PackageIdentifier: BareStats.BareStats
+PackageVersion: 1.3.0
+PackageName: BareStats
+Publisher: BareStats Contributors
+License: MIT
+LicenseUrl: https://github.com/chakrank/BareStats/blob/main/LICENSE
+ShortDescription: Ultra-lightweight native system telemetry overlay
+Description: |
+  BareStats is an unprivileged, ultra-lightweight telemetry overlay delivering
+  real-time CPU, GPU, VRAM, RAM, and network throughput at 0.00% idle duty cycle.
+  Engineered for local AI/ML workloads, competitive gaming, and workstation productivity.
+Moniker: barestats
+Tags:
+  - telemetry
+  - monitoring
+  - overlay
+  - gpu
+  - hardware
+PackageUrl: https://github.com/chakrank/BareStats
+Installers:
+  - Architecture: x64
+    InstallerType: portable
+    InstallerUrl: https://github.com/chakrank/BareStats/releases/download/v1.3.0/BareStats-v1.3.0-Windows-x64.zip
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    Commands:
+      - BareStats
+ManifestType: singleton
+ManifestVersion: 1.6.0

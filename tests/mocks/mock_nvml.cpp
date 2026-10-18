@@ -1,4 +1,15 @@
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
+#define MOCK_EXPORT __declspec(dllexport)
+#define MOCK_CDECL __cdecl
+#else
+#define MOCK_EXPORT __attribute__((visibility("default")))
+#define MOCK_CDECL
+#endif
+
 #include <cstdint>
 #include <cstring>
 
@@ -26,47 +37,51 @@ struct NvmlMemory_v2 {
 
 extern "C" {
 
-__declspec(dllexport) int __cdecl nvmlInit_v2() {
+MOCK_EXPORT int MOCK_CDECL nvmlInit_v2() {
     return NVML_SUCCESS;
 }
 
-__declspec(dllexport) int __cdecl nvmlInit() {
+MOCK_EXPORT int MOCK_CDECL nvmlInit() {
     return NVML_SUCCESS;
 }
 
-__declspec(dllexport) int __cdecl nvmlShutdown() {
+MOCK_EXPORT int MOCK_CDECL nvmlShutdown() {
     return NVML_SUCCESS;
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetCount_v2(unsigned int* deviceCount) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetCount_v2(unsigned int* deviceCount) {
     if (!deviceCount) return NVML_ERROR_GENERIC;
     *deviceCount = 1;
     return NVML_SUCCESS;
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetCount(unsigned int* deviceCount) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetCount(unsigned int* deviceCount) {
     return nvmlDeviceGetCount_v2(deviceCount);
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetHandleByIndex_v2(unsigned int index, void** device) {
-    (void)index;
-    if (!device) return NVML_ERROR_GENERIC;
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetHandleByIndex_v2(unsigned int index, void** device) {
+    if (!device || index >= 1) return NVML_ERROR_GENERIC;
     *device = (void*)0x10DE0001;
     return NVML_SUCCESS;
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetHandleByIndex(unsigned int index, void** device) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetHandleByIndex(unsigned int index, void** device) {
     return nvmlDeviceGetHandleByIndex_v2(index, device);
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetName(void* device, char* name, unsigned int length) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetName(void* device, char* name, unsigned int length) {
     (void)device;
     if (!name || length == 0) return NVML_ERROR_GENERIC;
+#ifdef _WIN32
     strncpy_s(name, length, "NVIDIA GeForce RTX 4090", _TRUNCATE);
+#else
+    strncpy(name, "NVIDIA GeForce RTX 4090", length - 1);
+    name[length - 1] = '\0';
+#endif
     return NVML_SUCCESS;
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetUtilizationRates(void* device, void* utilization) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetUtilizationRates(void* device, void* utilization) {
     (void)device;
     if (!utilization) return NVML_ERROR_GENERIC;
     auto* u = reinterpret_cast<NvmlUtilization*>(utilization);
@@ -75,7 +90,7 @@ __declspec(dllexport) int __cdecl nvmlDeviceGetUtilizationRates(void* device, vo
     return NVML_SUCCESS;
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetMemoryInfo_v2(void* device, void* memory) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetMemoryInfo_v2(void* device, void* memory) {
     (void)device;
     if (!memory) return NVML_ERROR_GENERIC;
     auto* m = reinterpret_cast<NvmlMemory_v2*>(memory);
@@ -86,7 +101,7 @@ __declspec(dllexport) int __cdecl nvmlDeviceGetMemoryInfo_v2(void* device, void*
     return NVML_SUCCESS;
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetMemoryInfo(void* device, void* memory) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetMemoryInfo(void* device, void* memory) {
     (void)device;
     if (!memory) return NVML_ERROR_GENERIC;
     auto* m = reinterpret_cast<NvmlMemory*>(memory);
@@ -96,7 +111,7 @@ __declspec(dllexport) int __cdecl nvmlDeviceGetMemoryInfo(void* device, void* me
     return NVML_SUCCESS;
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetTemperature(void* device, int sensorType, unsigned int* temp) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetTemperature(void* device, int sensorType, unsigned int* temp) {
     (void)device;
     (void)sensorType;
     if (!temp) return NVML_ERROR_GENERIC;
@@ -104,37 +119,37 @@ __declspec(dllexport) int __cdecl nvmlDeviceGetTemperature(void* device, int sen
     return NVML_SUCCESS;
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetPowerUsage(void* device, unsigned int* power) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetPowerUsage(void* device, unsigned int* power) {
     (void)device;
     if (!power) return NVML_ERROR_GENERIC;
     *power = 285000; // 285,000 mW = 285 W
     return NVML_SUCCESS;
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetFanSpeed(void* device, unsigned int* speed) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetFanSpeed(void* device, unsigned int* speed) {
     (void)device;
     if (!speed) return NVML_ERROR_GENERIC;
     *speed = 55;
     return NVML_SUCCESS;
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetFanSpeed_v2(void* device, unsigned int fan, unsigned int* speed) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetFanSpeed_v2(void* device, unsigned int fan, unsigned int* speed) {
     (void)fan;
     return nvmlDeviceGetFanSpeed(device, speed);
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetEnforcedPowerLimit(void* device, unsigned int* limit) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetEnforcedPowerLimit(void* device, unsigned int* limit) {
     (void)device;
     if (!limit) return NVML_ERROR_GENERIC;
     *limit = 450000; // 450 W
     return NVML_SUCCESS;
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetPowerManagementLimit(void* device, unsigned int* limit) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetPowerManagementLimit(void* device, unsigned int* limit) {
     return nvmlDeviceGetEnforcedPowerLimit(device, limit);
 }
 
-__declspec(dllexport) int __cdecl nvmlDeviceGetTemperatureThreshold(void* device, int thresholdType, unsigned int* temp) {
+MOCK_EXPORT int MOCK_CDECL nvmlDeviceGetTemperatureThreshold(void* device, int thresholdType, unsigned int* temp) {
     (void)device;
     (void)thresholdType;
     if (!temp) return NVML_ERROR_GENERIC;

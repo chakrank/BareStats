@@ -1,12 +1,32 @@
 #include "config.h"
+#include "ini_parser.h"
 #include "../metrics/gpu_collector.h"
-#include <shlobj.h>
 #include <sstream>
 #include <iomanip>
 #include <vector>
 #include <algorithm>
 #include <fstream>
 #include <unordered_set>
+#include <filesystem>
+#include <cmath>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shlobj.h>
+#elif defined(__APPLE__)
+#include <unistd.h>
+#include <cstdlib>
+#include <mach-o/dyld.h>
+#else
+#include <unistd.h>
+#include <cstdlib>
+#endif
 
 namespace BareStats {
 
@@ -32,6 +52,7 @@ static COLORREF HexToColor(const std::string& hex, COLORREF defaultColor) {
     }
 }
 
+#ifdef _WIN32
 static std::string WideToUtf8(const std::wstring& wstr) {
     if (wstr.empty()) return "";
     int len = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
@@ -49,6 +70,57 @@ static std::wstring Utf8ToWide(const std::string& str) {
     MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &wstr[0], len);
     return wstr;
 }
+#else
+static std::string WideToUtf8(const std::wstring& wstr) {
+    std::string out;
+    for (wchar_t wc : wstr) {
+        uint32_t cp = static_cast<uint32_t>(wc);
+        if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp < 0x800) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp < 0x10000) {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+    return out;
+}
+
+static std::wstring Utf8ToWide(const std::string& str) {
+    std::wstring out;
+    size_t i = 0;
+    while (i < str.size()) {
+        uint8_t c = static_cast<uint8_t>(str[i]);
+        if (c < 0x80) {
+            out.push_back(static_cast<wchar_t>(c));
+            i++;
+        } else if ((c >> 5) == 0x6 && i + 1 < str.size()) {
+            uint32_t cp = ((c & 0x1F) << 6) | (static_cast<uint8_t>(str[i + 1]) & 0x3F);
+            out.push_back(static_cast<wchar_t>(cp));
+            i += 2;
+        } else if ((c >> 4) == 0xE && i + 2 < str.size()) {
+            uint32_t cp = ((c & 0x0F) << 12) | ((static_cast<uint8_t>(str[i + 1]) & 0x3F) << 6) | (static_cast<uint8_t>(str[i + 2]) & 0x3F);
+            out.push_back(static_cast<wchar_t>(cp));
+            i += 3;
+        } else if ((c >> 3) == 0x1E && i + 3 < str.size()) {
+            uint32_t cp = ((c & 0x07) << 18) | ((static_cast<uint8_t>(str[i + 1]) & 0x3F) << 12) | ((static_cast<uint8_t>(str[i + 2]) & 0x3F) << 6) | (static_cast<uint8_t>(str[i + 3]) & 0x3F);
+            out.push_back(static_cast<wchar_t>(cp));
+            i += 4;
+        } else {
+            i++;
+        }
+    }
+    return out;
+}
+#endif
 
 static std::string JoinMetricOrder(const std::vector<std::string>& order) {
     std::ostringstream oss;
@@ -57,27 +129,6 @@ static std::string JoinMetricOrder(const std::vector<std::string>& order) {
         oss << order[i];
     }
     return oss.str();
-}
-
-static bool ReadIniBool(const char* section, const char* key, bool defaultVal, const std::string& iniPath) {
-    char buf[64] = {0};
-    DWORD ret = GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), iniPath.c_str());
-    if (ret == 0 || buf[0] == '\0') {
-        return defaultVal;
-    }
-    std::string val(buf);
-    size_t first = val.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return defaultVal;
-    size_t last = val.find_last_not_of(" \t\r\n");
-    val = val.substr(first, last - first + 1);
-
-    if (val == "0" || _stricmp(val.c_str(), "false") == 0 || _stricmp(val.c_str(), "off") == 0 || _stricmp(val.c_str(), "no") == 0) {
-        return false;
-    }
-    if (val == "1" || _stricmp(val.c_str(), "true") == 0 || _stricmp(val.c_str(), "on") == 0 || _stricmp(val.c_str(), "yes") == 0) {
-        return true;
-    }
-    return defaultVal;
 }
 
 bool ConfigManager::CreateDefaultConfigFile(const std::string& iniPath, const AppConfig& config) {
@@ -138,23 +189,27 @@ bool ConfigManager::CreateDefaultConfigFile(const std::string& iniPath, const Ap
         << "# Threshold alert colors\n"
         << "color_high = " << ColorToHex(config.colorHigh) << "\n"
         << "color_critical = " << ColorToHex(config.colorCritical) << "\n"
+        << "# Dynamic color alerts on critical thresholds (1 = enabled, 0 = disabled)\n"
         << "enable_dynamic_colors = " << (config.enableDynamicColors ? "1" : "0") << "\n"
-        << "# Subtle dark drop-shadow for contrast over white windows (1 = enabled, 0 = disabled)\n"
+        << "# Text drop shadow for legibility over light backgrounds\n"
         << "drop_shadow = " << (config.dropShadow ? "1" : "0") << "\n"
-        << "# Telemetry category divider symbol (e.g. │, |, •, /, -, ::)\n"
+        << "# Divider separator glyph (default: box drawings light vertical │)\n"
         << "separator = " << WideToUtf8(config.separator) << "\n"
-        << "# Global overlay window opacity percentage (10 to 100)\n"
+        << "# Global overlay opacity percentage (10 to 100, default: 100)\n"
         << "opacity = " << config.opacity << "\n\n"
+        << "# Show icon in Linux system tray / top panel (1 = enabled, 0 = disabled)\n"
+        << "# Set to 0 to keep the taskbar clean and use Dock/Desktop right-click instead.\n"
+        << "show_tray_icon = " << (config.showTrayIcon ? "1" : "0") << "\n\n"
         << "[Telemetry]\n"
-        << "# Polling refresh interval in milliseconds (min: 100, max: 60000, default: 1000)\n"
+        << "# Telemetry polling and refresh interval in milliseconds (default: 1000)\n"
         << "refresh_interval_ms = " << config.refreshIntervalMs << "\n\n";
 
-    // Dynamic Hardware Introspection: Probe physical GPUs present via DXGI
+    // Dynamic Hardware Introspection: Probe physical GPUs present via GpuCollector
     auto detectedGpus = GpuCollector::GetAvailableGpus();
     oss << "# ----------------------------------------------------------------------------\n"
         << "# Hardware Detected: " << detectedGpus.size() << " physical GPU(s) available\n";
     if (detectedGpus.empty()) {
-        oss << "#   (Universal Windows D3DKMT / DXGI fallback active)\n";
+        oss << "#   (Universal fallback active)\n";
     } else {
         for (const auto& d : detectedGpus) {
             char vBuf[16];
@@ -163,37 +218,27 @@ bool ConfigManager::CreateDefaultConfigFile(const std::string& iniPath, const Ap
                 << (d.dedicatedVideoMemory / (1024 * 1024)) << " MB)\n";
         }
     }
-    oss << "# ----------------------------------------------------------------------------\n"
-        << "# Selected GPU target index: single (0 = primary display), multi (0, 1), or all (all)\n"
-        << "# Examples:\n"
-        << "#   gpu_index = 0          -> Monitor primary display GPU only\n"
-        << "#   gpu_index = 0, 1       -> Monitor GPU0 and GPU1 concurrently\n"
-        << "#   gpu_index = all        -> Monitor all discovered physical GPUs simultaneously\n"
-        << "gpu_index = " << (config.gpuTarget.empty() ? std::to_string(config.gpuIndex) : config.gpuTarget) << "\n\n"
-        << "# VRAM capacity reporting mode:\n"
-        << "#   physical = Gross hardware silicon capacity (e.g. 16.0 GB, matches retail box & Task Manager)\n"
-        << "#   usable   = Net allocatable capacity excluding driver reservations (e.g. 15.6 GB, AI/CUDA OOM guard)\n"
-        << "vram_mode = " << (config.vramMode == VramMode::Usable ? "usable" : "physical") << "\n\n"
-        << "# Metric segment display ordering (comma-separated: CPU, GPU, RAM)\n"
-        << "order = " << JoinMetricOrder(config.metricOrder) << "\n\n"
-        << "# Toggle specific metrics (1 = show, 0 = hide)\n"
+    oss << "# ----------------------------------------------------------------------------\n\n"
+        << "# Target GPU adapter index or multi-GPU target expression:\n"
+        << "#   gpu_index = 0       (monitor dedicated GPU0)\n"
+        << "#   gpu_index = 0, 1    (monitor GPU0 and GPU1 side-by-side)\n"
+        << "#   gpu_index = all     (monitor all hardware GPU adapters)\n"
+        << "gpu_index = " << (config.gpuTarget.empty() ? std::to_string(config.gpuIndex) : config.gpuTarget) << "\n"
+        << "# VRAM capacity calculation mode: physical (default) or usable (AI/CUDA net limit)\n"
+        << "vram_mode = " << (config.vramMode == VramMode::Usable ? "usable" : "physical") << "\n"
+        << "# Telemetry category display ordering sequence\n"
+        << "order = " << JoinMetricOrder(config.metricOrder) << "\n"
+        << "# Individual metric category toggles (1 = enabled, 0 = disabled)\n"
         << "show_cpu = " << (config.showCpu ? "1" : "0") << "\n"
         << "show_gpu = " << (config.showGpu ? "1" : "0") << "\n"
         << "show_ram = " << (config.showRam ? "1" : "0") << "\n"
         << "show_net = " << (config.showNet ? "1" : "0") << "\n"
-        << "# GPU sensor toggles (NVIDIA NVML, AMD ADL, Intel IGCL with universal DXGI & D3DKMT fallback)\n"
         << "show_gpu_temp = " << (config.showGpuTemp ? "1" : "0") << "\n"
         << "show_gpu_power = " << (config.showGpuPower ? "1" : "0") << "\n"
         << "show_gpu_fan = " << (config.showGpuFan ? "1" : "0") << "\n"
-        << "# Show max memory total (1 = 11.7/16GB, 0 = 11.7GB current only)\n"
         << "show_max_memory = " << (config.showMaxMemory ? "1" : "0") << "\n"
-        << "# Automatically hide offline/unavailable metrics after launch (1 = hide, 0 = show N/A)\n"
         << "hide_offline_metrics = " << (config.hideOfflineMetrics ? "1" : "0") << "\n\n"
-        << "# ----------------------------------------------------------------------------\n"
-        << "# Optional Per-GPU Overrides (uncomment and configure per adapter index)\n"
-        << "# Allows asymmetric telemetry (e.g. detailed graphics sensors on primary card,\n"
-        << "# compact VRAM-only monitoring on background compute/inference card)\n"
-        << "# ----------------------------------------------------------------------------\n"
+        << "# Per-GPU Hierarchical Configuration Overrides (optional)\n"
         << "# [GPU0]\n"
         << "# show_temp = 1\n"
         << "# show_power = 1\n"
@@ -206,19 +251,24 @@ bool ConfigManager::CreateDefaultConfigFile(const std::string& iniPath, const Ap
         << "# show_fan = 0\n"
         << "# label = Compute\n";
 
-    HANDLE hFile = CreateFileA(iniPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hFile != INVALID_HANDLE_VALUE) {
+    std::ofstream file(iniPath, std::ios::binary | std::ios::trunc);
+    if (file.is_open()) {
         std::string content = oss.str();
-        DWORD written = 0;
-        WriteFile(hFile, content.data(), static_cast<DWORD>(content.size()), &written, nullptr);
-        CloseHandle(hFile);
-        return true;
+        file.write(content.data(), static_cast<std::streamsize>(content.size()));
+        return file.good();
     }
     return false;
 }
 
 std::string ConfigManager::GetDefaultConfigPath() {
-    // 1. Check for Portable Mode (config.ini right next to the executable)
+#ifdef _WIN32
+    // 1. Check Current Working Directory (./config.ini)
+    std::error_code cwdEc;
+    if (std::filesystem::exists("config.ini", cwdEc)) {
+        return "config.ini";
+    }
+
+    // 2. Check for Portable Mode (config.ini right next to the executable)
     char exePath[MAX_PATH] = { 0 };
     if (GetModuleFileNameA(nullptr, exePath, MAX_PATH) > 0) {
         std::string path = exePath;
@@ -227,7 +277,6 @@ std::string ConfigManager::GetDefaultConfigPath() {
             std::string exeDir = path.substr(0, lastSlash + 1);
             std::string localIni = exeDir + "config.ini";
 
-            // If config.ini exists next to the .exe, test if it is writable
             DWORD attrib = GetFileAttributesA(localIni.c_str());
             if (attrib != INVALID_FILE_ATTRIBUTES && !(attrib & FILE_ATTRIBUTE_DIRECTORY)) {
                 HANDLE hFile = CreateFileA(localIni.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -236,7 +285,6 @@ std::string ConfigManager::GetDefaultConfigPath() {
                     return localIni; // Portable mode confirmed
                 }
             } else {
-                // Test if the directory is writable
                 std::string testFile = exeDir + ".__write_test.tmp";
                 HANDLE hTest = CreateFileA(testFile.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
                 if (hTest != INVALID_HANDLE_VALUE) {
@@ -247,23 +295,113 @@ std::string ConfigManager::GetDefaultConfigPath() {
         }
     }
 
-    // 2. Fallback to %LOCALAPPDATA%\BareStats\config.ini (Installed / Protected Mode)
+    // 3. Fallback to %LOCALAPPDATA%\BareStats\config.ini (Installed / Protected Mode)
     char localAppData[MAX_PATH] = { 0 };
     if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, localAppData))) {
         std::string appDir = std::string(localAppData) + "\\BareStats";
-        CreateDirectoryA(appDir.c_str(), nullptr);
+        std::error_code ec;
+        std::filesystem::create_directories(appDir, ec);
         return appDir + "\\config.ini";
     }
 
     return "config.ini";
+#elif defined(__APPLE__)
+    // macOS Implementation
+    // 1. Check for Current Working Directory (./config.ini)
+    std::error_code cwdEc;
+    if (std::filesystem::exists("config.ini", cwdEc) && access("config.ini", R_OK) == 0) {
+        return "config.ini";
+    }
+
+    // 2. Check for Portable Mode (config.ini right next to executable / inside bundle)
+    char exePath[4096] = { 0 };
+    uint32_t bufSize = sizeof(exePath);
+    if (_NSGetExecutablePath(exePath, &bufSize) == 0) {
+        std::string path(exePath);
+        size_t lastSlash = path.find_last_of('/');
+        if (lastSlash != std::string::npos) {
+            std::string exeDir = path.substr(0, lastSlash + 1);
+            std::string localIni = exeDir + "config.ini";
+            if (std::filesystem::exists(localIni) && access(localIni.c_str(), W_OK) == 0) {
+                return localIni;
+            }
+        }
+    }
+
+    // 3. Native User Configuration: ~/Library/Application Support/BareStats/config.ini
+    const char* envHome = std::getenv("HOME");
+    if (envHome && envHome[0] != '\0') {
+        std::string appSupportDir = std::string(envHome) + "/Library/Application Support/BareStats";
+        std::string appSupportIni = appSupportDir + "/config.ini";
+        if (std::filesystem::exists(appSupportIni)) {
+            return appSupportIni;
+        }
+
+        // 4. Backward-compatible fallback check: ~/.config/barestats/config.ini
+        std::string legacyIni = std::string(envHome) + "/.config/barestats/config.ini";
+        if (std::filesystem::exists(legacyIni)) {
+            return legacyIni;
+        }
+
+        // Default target: create ~/Library/Application Support/BareStats/config.ini
+        std::error_code ec;
+        std::filesystem::create_directories(appSupportDir, ec);
+        return appSupportIni;
+    }
+
+    return "config.ini";
+#else
+    // Linux Implementation
+    // 1. Check for Current Working Directory (./config.ini)
+    std::error_code cwdEc;
+    if (std::filesystem::exists("config.ini", cwdEc) && access("config.ini", R_OK) == 0) {
+        return "config.ini";
+    }
+
+    // 2. Check for Portable Mode (config.ini right next to /proc/self/exe)
+    char exePath[4096] = { 0 };
+    ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+    if (len > 0) {
+        exePath[len] = '\0';
+        std::string path(exePath);
+        size_t lastSlash = path.find_last_of('/');
+        if (lastSlash != std::string::npos) {
+            std::string exeDir = path.substr(0, lastSlash + 1);
+            std::string localIni = exeDir + "config.ini";
+            if (std::filesystem::exists(localIni) && access(localIni.c_str(), W_OK) == 0) {
+                return localIni;
+            }
+        }
+    }
+
+    // 3. XDG Configuration Directory: $XDG_CONFIG_HOME/barestats/config.ini or ~/.config/barestats/config.ini
+    std::string configHome;
+    const char* envXdg = std::getenv("XDG_CONFIG_HOME");
+    if (envXdg && envXdg[0] != '\0') {
+        configHome = envXdg;
+    } else {
+        const char* envHome = std::getenv("HOME");
+        if (envHome && envHome[0] != '\0') {
+            configHome = std::string(envHome) + "/.config";
+        }
+    }
+
+    if (!configHome.empty()) {
+        std::string appDir = configHome + "/barestats";
+        std::error_code ec;
+        std::filesystem::create_directories(appDir, ec);
+        return appDir + "/config.ini";
+    }
+
+    return "config.ini";
+#endif
 }
 
 bool ConfigManager::MigrateSchema(const std::string& iniPath, int /*oldVersion*/, int /*newVersion*/) {
-    // 1. Create safety backup (.bak) before modifying
     std::string bakPath = iniPath + ".bak";
-    CopyFileA(iniPath.c_str(), bakPath.c_str(), FALSE);
+    std::error_code ec;
+    std::filesystem::copy_file(iniPath, bakPath, std::filesystem::copy_options::overwrite_existing, ec);
 
-    // 2. Read entire file line-by-line
     std::ifstream inFile(iniPath);
     if (!inFile.is_open()) {
         return false;
@@ -285,7 +423,6 @@ bool ConfigManager::MigrateSchema(const std::string& iniPath, int /*oldVersion*/
         return s.substr(first, last - first + 1);
     };
 
-    // 3. Inventory existing sections and keys
     std::unordered_map<std::string, std::unordered_set<std::string>> existingKeys;
     std::unordered_set<std::string> existingSections;
     bool hasGpuSectionOrComment = false;
@@ -311,18 +448,17 @@ bool ConfigManager::MigrateSchema(const std::string& iniPath, int /*oldVersion*/
         }
     }
 
-    // Determine missing keys per section
     bool needBareStatsSec = (existingSections.count("barestats") == 0);
     bool needLayout = (existingKeys["position"].count("layout") == 0);
     bool needMaxGpusPerRow = (existingKeys["position"].count("max_gpus_per_row") == 0);
     bool needVramMode = (existingKeys["telemetry"].count("vram_mode") == 0);
     bool needOrder = (existingKeys["telemetry"].count("order") == 0);
     bool needShowNet = (existingKeys["telemetry"].count("show_net") == 0);
+    bool needShowTrayIcon = (existingKeys["appearance"].count("show_tray_icon") == 0);
     bool needGpuOverrides = !hasGpuSectionOrComment;
 
     std::ostringstream out;
 
-    // If [BareStats] section is completely missing, insert at the top
     if (needBareStatsSec) {
         out << "[BareStats]\n"
             << "# Configuration schema version. Used for automated zero-overhead in-place migrations.\n"
@@ -358,12 +494,15 @@ bool ConfigManager::MigrateSchema(const std::string& iniPath, int /*oldVersion*/
                     << "show_net = 0\n\n";
                 needShowNet = false;
             }
+        } else if (sec == "appearance") {
+            if (needShowTrayIcon) {
+                out << "# Show icon in Linux system tray / top panel (1 = enabled, 0 = disabled)\n"
+                    << "# Set to 0 to keep the taskbar clean and use Dock/Desktop right-click instead.\n"
+                    << "show_tray_icon = 0\n\n";
+                needShowTrayIcon = false;
+            }
             if (needGpuOverrides) {
-                out << "# ----------------------------------------------------------------------------\n"
-                    << "# Optional Per-GPU Overrides (uncomment and configure per adapter index)\n"
-                    << "# Allows asymmetric telemetry (e.g. detailed graphics sensors on primary card,\n"
-                    << "# compact VRAM-only monitoring on background compute/inference card)\n"
-                    << "# ----------------------------------------------------------------------------\n"
+                out << "\n# Per-GPU Hierarchical Configuration Overrides (optional)\n"
                     << "# [GPU0]\n"
                     << "# show_temp = 1\n"
                     << "# show_power = 1\n"
@@ -385,7 +524,6 @@ bool ConfigManager::MigrateSchema(const std::string& iniPath, int /*oldVersion*/
         std::string t = trim(line);
 
         if (!t.empty() && t.front() == '[' && t.back() == ']') {
-            // Before starting a new section, inject missing keys for previous section
             if (!currentSec.empty()) {
                 injectMissingForSec(currentSec);
             }
@@ -393,7 +531,6 @@ bool ConfigManager::MigrateSchema(const std::string& iniPath, int /*oldVersion*/
             for (char& c : currentSec) c = static_cast<char>(tolower(c));
         }
 
-        // If inside [BareStats] and line is schema_version, update it to CURRENT_CONFIG_SCHEMA_VERSION
         if (currentSec == "barestats" && t.find("schema_version") == 0) {
             out << "schema_version = " << CURRENT_CONFIG_SCHEMA_VERSION << "\n";
             continue;
@@ -402,57 +539,52 @@ bool ConfigManager::MigrateSchema(const std::string& iniPath, int /*oldVersion*/
         out << line << "\n";
     }
 
-    // Check end of file for currentSec injections
     if (!currentSec.empty()) {
         injectMissingForSec(currentSec);
     }
 
     std::string newContent = out.str();
-    HANDLE hFile = CreateFileA(iniPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hFile != INVALID_HANDLE_VALUE) {
-        DWORD written = 0;
-        WriteFile(hFile, newContent.data(), static_cast<DWORD>(newContent.size()), &written, nullptr);
-        CloseHandle(hFile);
-        return true;
+    std::ofstream outFile(iniPath, std::ios::binary | std::ios::trunc);
+    if (outFile.is_open()) {
+        outFile.write(newContent.data(), static_cast<std::streamsize>(newContent.size()));
+        return outFile.good();
     }
     return false;
 }
 
 AppConfig ConfigManager::Load(const std::string& iniPath) {
-    AppConfig config; // Built-in binary fallback defaults
+    AppConfig config;
 
-    DWORD attrib = GetFileAttributesA(iniPath.c_str());
-    if (attrib == INVALID_FILE_ATTRIBUTES || (attrib & FILE_ATTRIBUTE_DIRECTORY)) {
-        // Missing config file! Auto-generate with all defaults and return built-in fallback.
+    std::error_code ec;
+    if (!std::filesystem::exists(iniPath, ec)) {
         CreateDefaultConfigFile(iniPath, config);
         return config;
     }
 
-    // Fast Single-Call Schema Check (~2 microseconds)
-    int diskVersion = GetPrivateProfileIntA("BareStats", "schema_version", 0, iniPath.c_str());
-    if (diskVersion < CURRENT_CONFIG_SCHEMA_VERSION) {
-        MigrateSchema(iniPath, diskVersion, CURRENT_CONFIG_SCHEMA_VERSION);
+    IniDocument doc;
+    if (!doc.Load(iniPath)) {
+        CreateDefaultConfigFile(iniPath, config);
+        return config;
     }
 
-    char buf[256] = {0};
+    int diskVersion = doc.GetInt("BareStats", "schema_version", 0);
+    if (diskVersion < CURRENT_CONFIG_SCHEMA_VERSION) {
+        MigrateSchema(iniPath, diskVersion, CURRENT_CONFIG_SCHEMA_VERSION);
+        doc.Load(iniPath);
+    }
 
     // [Position]
-    config.monitorIndex = GetPrivateProfileIntA("Position", "monitor_index", config.monitorIndex, iniPath.c_str());
-    
-    GetPrivateProfileStringA("Position", "preset", MonitorHelper::PresetToString(config.preset).c_str(), buf, sizeof(buf), iniPath.c_str());
-    config.preset = MonitorHelper::StringToPreset(buf);
+    config.monitorIndex = doc.GetInt("Position", "monitor_index", config.monitorIndex);
+    config.preset = MonitorHelper::StringToPreset(doc.GetString("Position", "preset", MonitorHelper::PresetToString(config.preset)));
+    config.customX = doc.GetInt("Position", "custom_x", config.customX);
+    config.customY = doc.GetInt("Position", "custom_y", config.customY);
+    config.customRelX = doc.GetInt("Position", "custom_rel_x", config.customRelX);
+    config.customRelY = doc.GetInt("Position", "custom_rel_y", config.customRelY);
+    config.margin = doc.GetInt("Position", "margin", config.margin);
 
-    config.customX = GetPrivateProfileIntA("Position", "custom_x", config.customX, iniPath.c_str());
-    config.customY = GetPrivateProfileIntA("Position", "custom_y", config.customY, iniPath.c_str());
-    config.customRelX = GetPrivateProfileIntA("Position", "custom_rel_x", config.customRelX, iniPath.c_str());
-    config.customRelY = GetPrivateProfileIntA("Position", "custom_rel_y", config.customRelY, iniPath.c_str());
-    config.margin = GetPrivateProfileIntA("Position", "margin", config.margin, iniPath.c_str());
-
-    char layoutBuf[64] = {0};
-    GetPrivateProfileStringA("Position", "layout", "horizontal", layoutBuf, sizeof(layoutBuf), iniPath.c_str());
-    std::string layoutStr(layoutBuf);
+    std::string layoutStr = doc.GetString("Position", "layout", "horizontal");
     for (char& c : layoutStr) c = static_cast<char>(tolower(c));
-    if (layoutStr == "grid") {
+    if (layoutStr == "grid" || layoutStr == "multiline" || layoutStr == "multi-line") {
         config.layout = OverlayLayout::Grid;
     } else if (layoutStr == "custom_grid" || layoutStr == "matrix" || layoutStr == "custom") {
         config.layout = OverlayLayout::CustomGrid;
@@ -460,45 +592,40 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
         config.layout = OverlayLayout::Horizontal;
     }
 
-    config.maxGpusPerRow = GetPrivateProfileIntA("Position", "max_gpus_per_row", config.maxGpusPerRow, iniPath.c_str());
+    config.maxGpusPerRow = doc.GetInt("Position", "max_gpus_per_row", config.maxGpusPerRow);
     if (config.maxGpusPerRow < 1) config.maxGpusPerRow = 1;
 
-    char gridModeBuf[32] = {0};
-    GetPrivateProfileStringA("Position", "grid_mode", "unified", gridModeBuf, sizeof(gridModeBuf), iniPath.c_str());
-    std::string gridModeStr(gridModeBuf);
+    std::string gridModeStr = doc.GetString("Position", "grid_mode", "unified");
     for (char& c : gridModeStr) c = static_cast<char>(tolower(c));
-    config.gridMode = (gridModeStr == "islands" || gridModeStr == "split" || gridModeStr == "distributed") 
-        ? GridMode::Islands 
+    config.gridMode = (gridModeStr == "islands" || gridModeStr == "split" || gridModeStr == "distributed")
+        ? GridMode::Islands
         : GridMode::Unified;
 
-    config.cellGap = GetPrivateProfileIntA("Position", "cell_gap", config.cellGap, iniPath.c_str());
+    config.cellGap = doc.GetInt("Position", "cell_gap", config.cellGap);
     if (config.cellGap < 0) config.cellGap = 0;
-    config.rowGap = GetPrivateProfileIntA("Position", "row_gap", config.rowGap, iniPath.c_str());
+    config.rowGap = doc.GetInt("Position", "row_gap", config.rowGap);
     if (config.rowGap < 0) config.rowGap = 0;
 
     // Parse Custom Matrix Grid rows
     int maxColsFound = 0;
     for (int r = 1; r <= 32; ++r) {
-        char rowKey[32] = {0};
-        sprintf_s(rowKey, "grid_row_%d", r);
-        char rowBuf[512] = {0};
-        GetPrivateProfileStringA("Position", rowKey, "", rowBuf, sizeof(rowBuf), iniPath.c_str());
-        if (rowBuf[0] == '\0') {
-            GetPrivateProfileStringA("Grid", rowKey, "", rowBuf, sizeof(rowBuf), iniPath.c_str());
+        std::string rowKey = "grid_row_" + std::to_string(r);
+        std::string rowVal = doc.GetString("Position", rowKey, "");
+        if (rowVal.empty()) {
+            rowVal = doc.GetString("Grid", rowKey, "");
         }
-        if (rowBuf[0] == '\0') {
-            sprintf_s(rowKey, "row_%d", r);
-            GetPrivateProfileStringA("Position", rowKey, "", rowBuf, sizeof(rowBuf), iniPath.c_str());
-            if (rowBuf[0] == '\0') {
-                GetPrivateProfileStringA("Grid", rowKey, "", rowBuf, sizeof(rowBuf), iniPath.c_str());
+        if (rowVal.empty()) {
+            std::string altKey = "row_" + std::to_string(r);
+            rowVal = doc.GetString("Position", altKey, "");
+            if (rowVal.empty()) {
+                rowVal = doc.GetString("Grid", altKey, "");
             }
         }
-        if (rowBuf[0] == '\0') continue;
+        if (rowVal.empty()) continue;
 
-        std::string lineStr(rowBuf);
         std::vector<std::string> rawTokens;
         std::string curTok;
-        for (char ch : lineStr) {
+        for (char ch : rowVal) {
             if (ch == '|' || ch == ',') {
                 rawTokens.push_back(curTok);
                 curTok.clear();
@@ -542,7 +669,6 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
                 tok = "";
             }
 
-            // Merge identical non-empty adjacent tokens into colspan
             if (!tok.empty() && !gridRow.cells.empty() && gridRow.cells.back().token == tok) {
                 gridRow.cells.back().colSpan += span;
                 nextCol += span;
@@ -561,7 +687,6 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
     config.customGrid.numCols = maxColsFound;
     config.customGrid.numRows = static_cast<int>(config.customGrid.rows.size());
 
-    // Fallback if CustomGrid is chosen without explicit rows or if grid_mode = islands is active
     if ((config.layout == OverlayLayout::CustomGrid || config.gridMode == GridMode::Islands) && config.customGrid.IsEmpty()) {
         GridRow r0;
         r0.cells.push_back({ "cpu", 0, 1 });
@@ -579,73 +704,42 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
     }
 
     // [Appearance]
-    GetPrivateProfileStringA("Appearance", "font_name", "auto", buf, sizeof(buf), iniPath.c_str());
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, buf, -1, nullptr, 0);
-    if (wlen > 0) {
-        std::wstring wfont(wlen - 1, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, buf, -1, &wfont[0], wlen);
-        config.fontFace = wfont;
-    }
+    std::string fontName = doc.GetString("Appearance", "font_name", "auto");
+    config.fontFace = Utf8ToWide(fontName);
 
-    GetPrivateProfileStringA("Appearance", "font_weight", "semibold", buf, sizeof(buf), iniPath.c_str());
-    int wlenWeight = MultiByteToWideChar(CP_UTF8, 0, buf, -1, nullptr, 0);
-    if (wlenWeight > 0) {
-        std::wstring wweight(wlenWeight - 1, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, buf, -1, &wweight[0], wlenWeight);
-        config.fontWeight = wweight;
-    }
+    std::string fontWeight = doc.GetString("Appearance", "font_weight", "semibold");
+    config.fontWeight = Utf8ToWide(fontWeight);
 
-    config.fontSize = GetPrivateProfileIntA("Appearance", "font_size", config.fontSize, iniPath.c_str());
+    config.fontSize = doc.GetInt("Appearance", "font_size", config.fontSize);
     if (config.fontSize <= 0) {
+#ifdef _WIN32
         NONCLIENTMETRICSW ncm{};
         ncm.cbSize = sizeof(NONCLIENTMETRICSW);
-        int basePt = 13;
-        if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICSW), &ncm, 0)) {
-            int h = std::abs(ncm.lfMessageFont.lfHeight);
-            if (h > 0) {
-                basePt = h;
-            }
-        }
-        DWORD textScale = 100;
-        DWORD dataSize = sizeof(textScale);
-        RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Accessibility", L"TextScaleFactor", RRF_RT_REG_DWORD, nullptr, &textScale, &dataSize);
-        if (textScale > 100) {
-            config.fontSize = static_cast<int>(std::round(basePt * (textScale / 100.0)));
+        if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
+            config.fontSize = std::abs(ncm.lfCaptionFont.lfHeight);
         } else {
-            config.fontSize = basePt;
+            config.fontSize = 13;
         }
+#else
+        config.fontSize = 13;
+#endif
     }
 
-    GetPrivateProfileStringA("Appearance", "text_color", ColorToHex(config.textColor).c_str(), buf, sizeof(buf), iniPath.c_str());
-    config.textColor = HexToColor(buf, config.textColor);
+    config.textColor = HexToColor(doc.GetString("Appearance", "text_color", "#FFFFFF"), config.textColor);
+    config.labelColor = HexToColor(doc.GetString("Appearance", "label_color", "#A0A0A0"), config.labelColor);
+    config.separatorColor = HexToColor(doc.GetString("Appearance", "separator_color", "#6E6E6E"), config.separatorColor);
+    config.colorHigh = HexToColor(doc.GetString("Appearance", "color_high", "#FFD700"), config.colorHigh);
+    config.colorCritical = HexToColor(doc.GetString("Appearance", "color_critical", "#FF4D4D"), config.colorCritical);
 
-    GetPrivateProfileStringA("Appearance", "label_color", ColorToHex(config.labelColor).c_str(), buf, sizeof(buf), iniPath.c_str());
-    config.labelColor = HexToColor(buf, config.labelColor);
+    config.enableDynamicColors = doc.GetBool("Appearance", "enable_dynamic_colors", config.enableDynamicColors);
+    config.dropShadow = doc.GetBool("Appearance", "drop_shadow", config.dropShadow);
 
-    GetPrivateProfileStringA("Appearance", "separator_color", ColorToHex(config.separatorColor).c_str(), buf, sizeof(buf), iniPath.c_str());
-    config.separatorColor = HexToColor(buf, config.separatorColor);
-
-    GetPrivateProfileStringA("Appearance", "color_high", ColorToHex(config.colorHigh).c_str(), buf, sizeof(buf), iniPath.c_str());
-    config.colorHigh = HexToColor(buf, config.colorHigh);
-
-    GetPrivateProfileStringA("Appearance", "color_critical", ColorToHex(config.colorCritical).c_str(), buf, sizeof(buf), iniPath.c_str());
-    config.colorCritical = HexToColor(buf, config.colorCritical);
-
-    config.enableDynamicColors = ReadIniBool("Appearance", "enable_dynamic_colors", config.enableDynamicColors, iniPath);
-    config.dropShadow = ReadIniBool("Appearance", "drop_shadow", config.dropShadow, iniPath);
-
-    // Separator
-    char sepBuf[64] = {0};
-    GetPrivateProfileStringA("Appearance", "separator", "│", sepBuf, sizeof(sepBuf), iniPath.c_str());
-    std::wstring wsep = Utf8ToWide(sepBuf);
-    if (!wsep.empty()) {
-        config.separator = wsep;
+    std::string sepStr = doc.GetString("Appearance", "separator", "");
+    if (!sepStr.empty()) {
+        config.separator = Utf8ToWide(sepStr);
     }
 
-    // Opacity
-    char opBuf[32] = {0};
-    GetPrivateProfileStringA("Appearance", "opacity", "100", opBuf, sizeof(opBuf), iniPath.c_str());
-    std::string opStr(opBuf);
+    std::string opStr = doc.GetString("Appearance", "opacity", "100");
     size_t pctPos = opStr.find('%');
     if (pctPos != std::string::npos) opStr = opStr.substr(0, pctPos);
     try {
@@ -659,17 +753,16 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
         config.opacity = 100;
     }
     config.opacity = std::clamp(config.opacity, 10, 100);
+    config.showTrayIcon = doc.GetBool("Appearance", "show_tray_icon", false);
 
     // [Telemetry]
-    config.refreshIntervalMs = static_cast<uint32_t>(GetPrivateProfileIntA("Telemetry", "refresh_interval_ms", config.refreshIntervalMs, iniPath.c_str()));
+    config.refreshIntervalMs = static_cast<uint32_t>(doc.GetInt("Telemetry", "refresh_interval_ms", static_cast<int>(config.refreshIntervalMs)));
     if (config.refreshIntervalMs < 100 || config.refreshIntervalMs > 60000) {
         if (config.refreshIntervalMs < 100) config.refreshIntervalMs = 1000;
         else if (config.refreshIntervalMs > 60000) config.refreshIntervalMs = 60000;
     }
 
-    char gpuTargetBuf[64] = {0};
-    GetPrivateProfileStringA("Telemetry", "gpu_index", "0", gpuTargetBuf, sizeof(gpuTargetBuf), iniPath.c_str());
-    std::string gpuTargetStr(gpuTargetBuf);
+    std::string gpuTargetStr = doc.GetString("Telemetry", "gpu_index", "0");
     size_t gFirst = gpuTargetStr.find_first_not_of(" \t\r\n");
     size_t gLast = gpuTargetStr.find_last_not_of(" \t\r\n");
     if (gFirst != std::string::npos && gLast != std::string::npos) {
@@ -706,9 +799,6 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
         config.gpuIndex = static_cast<int>(config.targetGpuIndices[0]);
     }
 
-    // Dynamic CustomGrid GPU auto-targeting:
-    // If the CustomGrid matrix specifies a secondary or specific GPU adapter index (e.g. gpu1, gpu1_vram) or "gpu" token,
-    // automatically ensure the telemetry collector targets all GPUs so adapter ordering and telemetry are guaranteed.
     if (config.layout == OverlayLayout::CustomGrid || config.gridMode == GridMode::Islands) {
         bool hasGpuToken = false;
         for (const auto& row : config.customGrid.rows) {
@@ -725,9 +815,7 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
         }
     }
 
-    char vramBuf[32] = {0};
-    GetPrivateProfileStringA("Telemetry", "vram_mode", "physical", vramBuf, sizeof(vramBuf), iniPath.c_str());
-    std::string vramStr(vramBuf);
+    std::string vramStr = doc.GetString("Telemetry", "vram_mode", "physical");
     for (char& c : vramStr) c = static_cast<char>(tolower(c));
     if (vramStr == "usable") {
         config.vramMode = VramMode::Usable;
@@ -735,18 +823,15 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
         config.vramMode = VramMode::Physical;
     }
 
-    // Metric ordering
-    char orderBuf[128] = {0};
-    GetPrivateProfileStringA("Telemetry", "order", "CPU, GPU, RAM, NET", orderBuf, sizeof(orderBuf), iniPath.c_str());
-    std::string orderStr(orderBuf);
+    std::string orderStr = doc.GetString("Telemetry", "order", "CPU, GPU, RAM, NET");
     std::vector<std::string> parsedOrder;
     std::stringstream ss(orderStr);
-    std::string token;
-    while (std::getline(ss, token, ',')) {
-        size_t first = token.find_first_not_of(" \t\r\n");
-        size_t last = token.find_last_not_of(" \t\r\n");
+    std::string ordToken;
+    while (std::getline(ss, ordToken, ',')) {
+        size_t first = ordToken.find_first_not_of(" \t\r\n");
+        size_t last = ordToken.find_last_not_of(" \t\r\n");
         if (first != std::string::npos && last != std::string::npos) {
-            std::string trimmed = token.substr(first, last - first + 1);
+            std::string trimmed = ordToken.substr(first, last - first + 1);
             for (char& c : trimmed) c = static_cast<char>(toupper(c));
             if (trimmed == "CPU" || trimmed == "GPU" || trimmed == "RAM" || trimmed == "NET") {
                 if (std::find(parsedOrder.begin(), parsedOrder.end(), trimmed) == parsedOrder.end()) {
@@ -759,34 +844,29 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
         config.metricOrder = parsedOrder;
     }
 
-    config.showCpu = ReadIniBool("Telemetry", "show_cpu", config.showCpu, iniPath);
-    config.showGpu = ReadIniBool("Telemetry", "show_gpu", config.showGpu, iniPath);
-    config.showRam = ReadIniBool("Telemetry", "show_ram", config.showRam, iniPath);
-    config.showNet = ReadIniBool("Telemetry", "show_net", config.showNet, iniPath);
-    config.showGpuTemp = ReadIniBool("Telemetry", "show_gpu_temp", config.showGpuTemp, iniPath);
-    config.showGpuPower = ReadIniBool("Telemetry", "show_gpu_power", config.showGpuPower, iniPath);
-    config.showGpuFan = ReadIniBool("Telemetry", "show_gpu_fan", config.showGpuFan, iniPath);
-    config.showMaxMemory = ReadIniBool("Telemetry", "show_max_memory", config.showMaxMemory, iniPath);
-    config.hideOfflineMetrics = ReadIniBool("Telemetry", "hide_offline_metrics", config.hideOfflineMetrics, iniPath);
+    config.showCpu = doc.GetBool("Telemetry", "show_cpu", config.showCpu);
+    config.showGpu = doc.GetBool("Telemetry", "show_gpu", config.showGpu);
+    config.showRam = doc.GetBool("Telemetry", "show_ram", config.showRam);
+    config.showNet = doc.GetBool("Telemetry", "show_net", config.showNet);
+    config.showGpuTemp = doc.GetBool("Telemetry", "show_gpu_temp", config.showGpuTemp);
+    config.showGpuPower = doc.GetBool("Telemetry", "show_gpu_power", config.showGpuPower);
+    config.showGpuFan = doc.GetBool("Telemetry", "show_gpu_fan", config.showGpuFan);
+    config.showMaxMemory = doc.GetBool("Telemetry", "show_max_memory", config.showMaxMemory);
+    config.hideOfflineMetrics = doc.GetBool("Telemetry", "hide_offline_metrics", config.hideOfflineMetrics);
 
-    // [GPU0] .. [GPU15] Per-Adapter Hierarchical Configuration Overrides
+    // [GPU0] .. [GPU15]
     config.perGpuConfigs.clear();
     for (uint32_t i = 0; i < 16; ++i) {
         std::string section = "GPU" + std::to_string(i);
-        char testBuf[64] = {0};
-        if (GetPrivateProfileStringA(section.c_str(), nullptr, "", testBuf, sizeof(testBuf), iniPath.c_str()) > 0) {
+        if (doc.HasSection(section)) {
             PerGpuConfig gpuCfg;
-            gpuCfg.enabled = ReadIniBool(section.c_str(), "enabled", true, iniPath);
-            gpuCfg.showUtil = ReadIniBool(section.c_str(), "show_util", true, iniPath);
-            gpuCfg.showVram = ReadIniBool(section.c_str(), "show_vram", true, iniPath);
-            gpuCfg.showTemp = ReadIniBool(section.c_str(), "show_temp", config.showGpuTemp, iniPath);
-            gpuCfg.showPower = ReadIniBool(section.c_str(), "show_power", config.showGpuPower, iniPath);
-            gpuCfg.showFan = ReadIniBool(section.c_str(), "show_fan", config.showGpuFan, iniPath);
-
-            char lblBuf[64] = {0};
-            GetPrivateProfileStringA(section.c_str(), "label", "", lblBuf, sizeof(lblBuf), iniPath.c_str());
-            gpuCfg.label = lblBuf;
-
+            gpuCfg.enabled = doc.GetBool(section, "enabled", true);
+            gpuCfg.showUtil = doc.GetBool(section, "show_util", true);
+            gpuCfg.showVram = doc.GetBool(section, "show_vram", true);
+            gpuCfg.showTemp = doc.GetBool(section, "show_temp", config.showGpuTemp);
+            gpuCfg.showPower = doc.GetBool(section, "show_power", config.showGpuPower);
+            gpuCfg.showFan = doc.GetBool(section, "show_fan", config.showGpuFan);
+            gpuCfg.label = doc.GetString(section, "label", "");
             config.perGpuConfigs[i] = gpuCfg;
         }
     }
@@ -795,65 +875,78 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
 }
 
 bool ConfigManager::Save(const std::string& iniPath, const AppConfig& config) {
-    DWORD attrib = GetFileAttributesA(iniPath.c_str());
-    if (attrib == INVALID_FILE_ATTRIBUTES || (attrib & FILE_ATTRIBUTE_DIRECTORY)) {
+    std::error_code ec;
+    size_t lastSlash = iniPath.find_last_of("\\/");
+    if (lastSlash != std::string::npos) {
+        std::string dir = iniPath.substr(0, lastSlash);
+        if (!dir.empty()) {
+            std::filesystem::create_directories(dir, ec);
+        }
+    }
+
+    if (!std::filesystem::exists(iniPath, ec)) {
         return CreateDefaultConfigFile(iniPath, config);
     }
 
-    WritePrivateProfileStringA("Position", "monitor_index", std::to_string(config.monitorIndex).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Position", "preset", MonitorHelper::PresetToString(config.preset).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Position", "custom_x", std::to_string(config.customX).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Position", "custom_y", std::to_string(config.customY).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Position", "custom_rel_x", std::to_string(config.customRelX).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Position", "custom_rel_y", std::to_string(config.customRelY).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Position", "margin", std::to_string(config.margin).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Position", "layout", config.layout == OverlayLayout::CustomGrid ? "custom_grid" : (config.layout == OverlayLayout::Grid ? "grid" : "horizontal"), iniPath.c_str());
-    WritePrivateProfileStringA("Position", "grid_mode", config.gridMode == GridMode::Islands ? "islands" : "unified", iniPath.c_str());
-    WritePrivateProfileStringA("Position", "cell_gap", std::to_string(config.cellGap).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Position", "row_gap", std::to_string(config.rowGap).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Position", "max_gpus_per_row", std::to_string(config.maxGpusPerRow).c_str(), iniPath.c_str());
+    IniDocument doc;
+    doc.Load(iniPath);
 
-    // Convert fontFace to UTF-8
-    int ulen = WideCharToMultiByte(CP_UTF8, 0, config.fontFace.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (ulen > 0) {
-        std::string ufont(ulen - 1, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, config.fontFace.c_str(), -1, &ufont[0], ulen, nullptr, nullptr);
-        WritePrivateProfileStringA("Appearance", "font_name", ufont.c_str(), iniPath.c_str());
+    doc.SetInt("Position", "monitor_index", config.monitorIndex);
+    doc.SetString("Position", "preset", MonitorHelper::PresetToString(config.preset));
+    doc.SetInt("Position", "custom_x", config.customX);
+    doc.SetInt("Position", "custom_y", config.customY);
+    doc.SetInt("Position", "custom_rel_x", config.customRelX);
+    doc.SetInt("Position", "custom_rel_y", config.customRelY);
+    doc.SetInt("Position", "margin", config.margin);
+    doc.SetString("Position", "layout", config.layout == OverlayLayout::CustomGrid ? "custom_grid" : (config.layout == OverlayLayout::Grid ? "grid" : "horizontal"));
+    doc.SetString("Position", "grid_mode", config.gridMode == GridMode::Islands ? "islands" : "unified");
+    doc.SetInt("Position", "cell_gap", config.cellGap);
+    doc.SetInt("Position", "row_gap", config.rowGap);
+    doc.SetInt("Position", "max_gpus_per_row", config.maxGpusPerRow);
+
+    doc.SetString("Appearance", "font_name", WideToUtf8(config.fontFace));
+    doc.SetString("Appearance", "font_weight", WideToUtf8(config.fontWeight));
+    doc.SetInt("Appearance", "font_size", config.fontSize);
+    doc.SetString("Appearance", "text_color", ColorToHex(config.textColor));
+    doc.SetString("Appearance", "label_color", ColorToHex(config.labelColor));
+    doc.SetString("Appearance", "separator_color", ColorToHex(config.separatorColor));
+    doc.SetString("Appearance", "color_high", ColorToHex(config.colorHigh));
+    doc.SetString("Appearance", "color_critical", ColorToHex(config.colorCritical));
+    doc.SetBool("Appearance", "enable_dynamic_colors", config.enableDynamicColors);
+    doc.SetBool("Appearance", "drop_shadow", config.dropShadow);
+    doc.SetString("Appearance", "separator", WideToUtf8(config.separator));
+    doc.SetInt("Appearance", "opacity", config.opacity);
+    doc.SetBool("Appearance", "show_tray_icon", config.showTrayIcon);
+
+    doc.SetInt("Telemetry", "refresh_interval_ms", static_cast<int>(config.refreshIntervalMs));
+    doc.SetString("Telemetry", "gpu_index", config.gpuTarget.empty() ? std::to_string(config.gpuIndex) : config.gpuTarget);
+    doc.SetString("Telemetry", "vram_mode", config.vramMode == VramMode::Usable ? "usable" : "physical");
+    doc.SetString("Telemetry", "order", JoinMetricOrder(config.metricOrder));
+    doc.SetBool("Telemetry", "show_cpu", config.showCpu);
+    doc.SetBool("Telemetry", "show_gpu", config.showGpu);
+    doc.SetBool("Telemetry", "show_ram", config.showRam);
+    doc.SetBool("Telemetry", "show_net", config.showNet);
+    doc.SetBool("Telemetry", "show_gpu_temp", config.showGpuTemp);
+    doc.SetBool("Telemetry", "show_gpu_power", config.showGpuPower);
+    doc.SetBool("Telemetry", "show_gpu_fan", config.showGpuFan);
+    doc.SetBool("Telemetry", "show_max_memory", config.showMaxMemory);
+    doc.SetBool("Telemetry", "hide_offline_metrics", config.hideOfflineMetrics);
+
+    for (const auto& pair : config.perGpuConfigs) {
+        std::string section = "GPU" + std::to_string(pair.first);
+        const auto& gpuCfg = pair.second;
+        doc.SetBool(section, "enabled", gpuCfg.enabled);
+        doc.SetBool(section, "show_util", gpuCfg.showUtil);
+        doc.SetBool(section, "show_vram", gpuCfg.showVram);
+        doc.SetBool(section, "show_temp", gpuCfg.showTemp);
+        doc.SetBool(section, "show_power", gpuCfg.showPower);
+        doc.SetBool(section, "show_fan", gpuCfg.showFan);
+        if (!gpuCfg.label.empty()) {
+            doc.SetString(section, "label", gpuCfg.label);
+        }
     }
 
-    int ulenWeight = WideCharToMultiByte(CP_UTF8, 0, config.fontWeight.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (ulenWeight > 0) {
-        std::string uweight(ulenWeight - 1, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, config.fontWeight.c_str(), -1, &uweight[0], ulenWeight, nullptr, nullptr);
-        WritePrivateProfileStringA("Appearance", "font_weight", uweight.c_str(), iniPath.c_str());
-    }
-
-    WritePrivateProfileStringA("Appearance", "font_size", std::to_string(config.fontSize).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Appearance", "text_color", ColorToHex(config.textColor).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Appearance", "label_color", ColorToHex(config.labelColor).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Appearance", "separator_color", ColorToHex(config.separatorColor).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Appearance", "color_high", ColorToHex(config.colorHigh).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Appearance", "color_critical", ColorToHex(config.colorCritical).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Appearance", "enable_dynamic_colors", config.enableDynamicColors ? "1" : "0", iniPath.c_str());
-    WritePrivateProfileStringA("Appearance", "drop_shadow", config.dropShadow ? "1" : "0", iniPath.c_str());
-    WritePrivateProfileStringA("Appearance", "separator", WideToUtf8(config.separator).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Appearance", "opacity", std::to_string(config.opacity).c_str(), iniPath.c_str());
-
-    WritePrivateProfileStringA("Telemetry", "refresh_interval_ms", std::to_string(config.refreshIntervalMs).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Telemetry", "gpu_index", config.gpuTarget.empty() ? std::to_string(config.gpuIndex).c_str() : config.gpuTarget.c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Telemetry", "vram_mode", config.vramMode == VramMode::Usable ? "usable" : "physical", iniPath.c_str());
-    WritePrivateProfileStringA("Telemetry", "order", JoinMetricOrder(config.metricOrder).c_str(), iniPath.c_str());
-    WritePrivateProfileStringA("Telemetry", "show_cpu", config.showCpu ? "1" : "0", iniPath.c_str());
-    WritePrivateProfileStringA("Telemetry", "show_gpu", config.showGpu ? "1" : "0", iniPath.c_str());
-    WritePrivateProfileStringA("Telemetry", "show_ram", config.showRam ? "1" : "0", iniPath.c_str());
-    WritePrivateProfileStringA("Telemetry", "show_net", config.showNet ? "1" : "0", iniPath.c_str());
-    WritePrivateProfileStringA("Telemetry", "show_gpu_temp", config.showGpuTemp ? "1" : "0", iniPath.c_str());
-    WritePrivateProfileStringA("Telemetry", "show_gpu_power", config.showGpuPower ? "1" : "0", iniPath.c_str());
-    WritePrivateProfileStringA("Telemetry", "show_gpu_fan", config.showGpuFan ? "1" : "0", iniPath.c_str());
-    WritePrivateProfileStringA("Telemetry", "show_max_memory", config.showMaxMemory ? "1" : "0", iniPath.c_str());
-    WritePrivateProfileStringA("Telemetry", "hide_offline_metrics", config.hideOfflineMetrics ? "1" : "0", iniPath.c_str());
-
-    return true;
+    return doc.Save(iniPath);
 }
 
 } // namespace BareStats

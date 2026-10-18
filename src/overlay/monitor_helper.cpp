@@ -1,7 +1,13 @@
 #include "monitor_helper.h"
 #include <algorithm>
 
+#if defined(__APPLE__)
+#include <CoreGraphics/CoreGraphics.h>
+#endif
+
 namespace BareStats {
+
+#ifdef _WIN32
 
 struct EnumContext {
     std::vector<MonitorInfo> monitors;
@@ -51,6 +57,77 @@ std::vector<MonitorInfo> MonitorHelper::EnumerateMonitors() {
     return ctx.monitors;
 }
 
+#elif defined(__APPLE__)
+
+std::vector<MonitorInfo> MonitorHelper::EnumerateMonitors() {
+    std::vector<MonitorInfo> monitors;
+
+    CGDirectDisplayID displayIDs[32];
+    uint32_t displayCount = 0;
+    if (CGGetActiveDisplayList(32, displayIDs, &displayCount) == kCGErrorSuccess && displayCount > 0) {
+        CGDirectDisplayID mainDisplay = CGMainDisplayID();
+        for (uint32_t i = 0; i < displayCount; ++i) {
+            CGDirectDisplayID id = displayIDs[i];
+            CGRect bounds = CGDisplayBounds(id);
+
+            MonitorInfo info;
+            info.index = static_cast<int>(i);
+            info.isPrimary = (id == mainDisplay);
+            info.name = "Display " + std::to_string(i + 1);
+            info.rcMonitor = {
+                static_cast<int>(bounds.origin.x),
+                static_cast<int>(bounds.origin.y),
+                static_cast<int>(bounds.origin.x + bounds.size.width),
+                static_cast<int>(bounds.origin.y + bounds.size.height)
+            };
+            info.rcWork = info.rcMonitor;
+            if (info.isPrimary) {
+                info.rcWork.top += 25; // Default macOS menu bar height
+            }
+            monitors.push_back(info);
+        }
+    }
+
+    std::stable_sort(monitors.begin(), monitors.end(), [](const MonitorInfo& a, const MonitorInfo& b) {
+        if (a.isPrimary != b.isPrimary) {
+            return a.isPrimary > b.isPrimary;
+        }
+        return a.rcMonitor.left < b.rcMonitor.left;
+    });
+
+    for (size_t i = 0; i < monitors.size(); ++i) {
+        monitors[i].index = static_cast<int>(i);
+    }
+
+    if (monitors.empty()) {
+        MonitorInfo fallback;
+        fallback.index = 0;
+        fallback.isPrimary = true;
+        fallback.rcMonitor = { 0, 0, 1920, 1080 };
+        fallback.rcWork = { 0, 25, 1920, 1080 };
+        monitors.push_back(fallback);
+    }
+
+    return monitors;
+}
+
+#else // Linux fallback
+
+std::vector<MonitorInfo> MonitorHelper::EnumerateMonitors() {
+    std::vector<MonitorInfo> monitors;
+
+    MonitorInfo primary;
+    primary.index = 0;
+    primary.isPrimary = true;
+    primary.rcMonitor = { 0, 0, 1920, 1080 };
+    primary.rcWork = { 0, 0, 1920, 1080 };
+    monitors.push_back(primary);
+
+    return monitors;
+}
+
+#endif // _WIN32
+
 MonitorInfo MonitorHelper::GetMonitor(int monitorIndex) {
     auto monitors = EnumerateMonitors();
     if (monitorIndex >= 0 && monitorIndex < static_cast<int>(monitors.size())) {
@@ -59,12 +136,12 @@ MonitorInfo MonitorHelper::GetMonitor(int monitorIndex) {
     return monitors.front();
 }
 
-POINT MonitorHelper::CalculatePosition(const MonitorInfo& monitor, PositionPreset preset, int windowWidth, int windowHeight, int marginX, int marginY) {
-    const RECT& work = monitor.rcWork;
+Point MonitorHelper::CalculatePosition(const MonitorInfo& monitor, PositionPreset preset, int windowWidth, int windowHeight, int marginX, int marginY) {
+    const Rect& work = monitor.rcWork;
     int workWidth = work.right - work.left;
     int workHeight = work.bottom - work.top;
 
-    POINT pt{};
+    Point pt{};
     switch (preset) {
         case PositionPreset::TopLeft:
             pt.x = work.left + marginX;

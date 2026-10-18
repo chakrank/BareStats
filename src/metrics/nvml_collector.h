@@ -1,7 +1,6 @@
 #pragma once
 
 #include "metrics.h"
-#include <windows.h>
 #include <string>
 
 namespace BareStats {
@@ -18,7 +17,7 @@ public:
     bool LoadNvml(const char* customDllPath = nullptr);
 
 private:
-    HMODULE nvmlDll_ = nullptr;
+    void* nvmlDll_ = nullptr;
     std::string customDllPath_;
     bool isAvailable_ = false;
     void* deviceHandle_ = nullptr;

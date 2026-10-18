@@ -3,10 +3,14 @@
 #include <sstream>
 #include <iomanip>
 #include <cmath>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
-
-namespace BareStats {
-
 static std::wstring Utf8ToWide(const std::string& str) {
     if (str.empty()) return L"";
     int len = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
@@ -15,6 +19,67 @@ static std::wstring Utf8ToWide(const std::string& str) {
     MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &wstr[0], len);
     return wstr;
 }
+static std::string WideToUtf8(const std::wstring& wstr) {
+    if (wstr.empty()) return "";
+    int len = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1) return "";
+    std::string str(len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &str[0], len, nullptr, nullptr);
+    return str;
+}
+#else
+static std::wstring Utf8ToWide(const std::string& str) {
+    std::wstring out;
+    size_t i = 0;
+    while (i < str.size()) {
+        uint8_t c = static_cast<uint8_t>(str[i]);
+        if (c < 0x80) {
+            out.push_back(static_cast<wchar_t>(c));
+            i++;
+        } else if ((c >> 5) == 0x6 && i + 1 < str.size()) {
+            uint32_t cp = ((c & 0x1F) << 6) | (static_cast<uint8_t>(str[i + 1]) & 0x3F);
+            out.push_back(static_cast<wchar_t>(cp));
+            i += 2;
+        } else if ((c >> 4) == 0xE && i + 2 < str.size()) {
+            uint32_t cp = ((c & 0x0F) << 12) | ((static_cast<uint8_t>(str[i + 1]) & 0x3F) << 6) | (static_cast<uint8_t>(str[i + 2]) & 0x3F);
+            out.push_back(static_cast<wchar_t>(cp));
+            i += 3;
+        } else if ((c >> 3) == 0x1E && i + 3 < str.size()) {
+            uint32_t cp = ((c & 0x07) << 18) | ((static_cast<uint8_t>(str[i + 1]) & 0x3F) << 12) | ((static_cast<uint8_t>(str[i + 2]) & 0x3F) << 6) | (static_cast<uint8_t>(str[i + 3]) & 0x3F);
+            out.push_back(static_cast<wchar_t>(cp));
+            i += 4;
+        } else {
+            i++;
+        }
+    }
+    return out;
+}
+
+static std::string WideToUtf8(const std::wstring& wstr) {
+    std::string out;
+    for (wchar_t wc : wstr) {
+        uint32_t cp = static_cast<uint32_t>(wc);
+        if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp < 0x800) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp < 0x10000) {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+    return out;
+}
+#endif
+
+namespace BareStats {
 
 static MetricSeverity GetSeverity(double percent, double highThresh = 80.0, double critThresh = 90.0) {
     if (percent >= critThresh) return MetricSeverity::Critical;
@@ -1015,11 +1080,7 @@ std::wstring Formatter::Format(const SystemMetrics& metrics, const AppConfig* co
 
 std::string Formatter::FormatUtf8(const SystemMetrics& metrics, const AppConfig* config) {
     std::wstring wstr = Format(metrics, config);
-    int size = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (size <= 1) return "";
-    std::string str(size - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &str[0], size, nullptr, nullptr);
-    return str;
+    return WideToUtf8(wstr);
 }
 
 } // namespace BareStats

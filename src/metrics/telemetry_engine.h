@@ -6,11 +6,15 @@
 #include "gpu_collector.h"
 #include "network_collector.h"
 #include "../config/config.h"
-#include <windows.h>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <functional>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace BareStats {
 
@@ -19,8 +23,13 @@ public:
     explicit TelemetryEngine(const AppConfig& config);
     ~TelemetryEngine();
 
-    // Start background sampling thread
+    // Start background sampling thread with cross-platform callback
+    void Start(std::function<void()> onUpdateCallback = nullptr);
+
+#ifdef _WIN32
+    // Windows Win32 message notification overload
     void Start(HWND notifyHwnd, UINT notifyMsg);
+#endif
 
     // Stop background sampling thread
     void Stop();
@@ -57,8 +66,12 @@ private:
     GpuCollector gpuCollector_;
     NetworkCollector netCollector_;
 
+    std::function<void()> onUpdateCallback_;
+
+#ifdef _WIN32
     HWND notifyHwnd_ = nullptr;
     UINT notifyMsg_ = 0;
+#endif
 
     std::thread workerThread_;
     std::mutex metricsMutex_;

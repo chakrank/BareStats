@@ -1,7 +1,20 @@
-#include "cpu_collector.h"
+#include "../cpu_collector.h"
 #include <algorithm>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 namespace BareStats {
+
+static uint64_t FileTimeToUint64(const FILETIME& ft) {
+    return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+}
 
 CpuCollector::CpuCollector() {
     FILETIME idleTime, kernelTime, userTime;
@@ -11,10 +24,6 @@ CpuCollector::CpuCollector() {
         prevUserTime_ = FileTimeToUint64(userTime);
         initialized_ = true;
     }
-}
-
-uint64_t CpuCollector::FileTimeToUint64(const FILETIME& ft) {
-    return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
 }
 
 CpuMetrics CpuCollector::Collect() {
@@ -57,3 +66,5 @@ CpuMetrics CpuCollector::Collect() {
 }
 
 } // namespace BareStats
+
+#endif // _WIN32

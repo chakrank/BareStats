@@ -1,0 +1,39 @@
+[Desktop Entry]
+Version=1.5
+Type=Application
+Name=BareStats
+GenericName=System Telemetry Overlay
+Comment=BareStats - Ultra-lightweight native telemetry overlay
+Exec=barestats
+Icon=barestats
+Terminal=false
+Categories=System;Monitor;
+Keywords=telemetry;system;cpu;gpu;memory;network;overlay;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+StartupWMClass=BareStats
+Actions=MoveMode;ResetBottom;NextPreset;Toggle;ReloadConfig;Exit;
+
+[Desktop Action MoveMode]
+Name=Reposition Mode (Drag Overlay)
+Exec=barestats --move
+
+[Desktop Action ResetBottom]
+Name=Reset to Bottom-Center
+Exec=barestats --preset BottomCenter
+
+[Desktop Action NextPreset]
+Name=Cycle Position (Next Corner)
+Exec=barestats --preset next
+
+[Desktop Action Toggle]
+Name=Toggle Overlay (Hide/Show)
+Exec=barestats --toggle
+
+[Desktop Action ReloadConfig]
+Name=Reload Configuration
+Exec=barestats --reload
+
+[Desktop Action Exit]
+Name=Exit BareStats
+Exec=barestats --quit

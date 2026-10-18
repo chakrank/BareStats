@@ -1,0 +1,27 @@
+{
+    "version": "1.3.0",
+    "description": "Ultra-lightweight native system telemetry overlay",
+    "homepage": "https://github.com/chakrank/BareStats",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/chakrank/BareStats/releases/download/v1.3.0/BareStats-v1.3.0-Windows-x64.zip",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+    },
+    "bin": "BareStats.exe",
+    "shortcuts": [
+        [
+            "BareStats.exe",
+            "BareStats"
+        ]
+    ],
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/chakrank/BareStats/releases/download/v$version/BareStats-v$version-Windows-x64.zip"
+            }
+        }
+    }
+}
