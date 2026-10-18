@@ -162,7 +162,8 @@ jobs:
       - name: Smoke Test openSUSE (.rpm via Zypper)
         if: matrix.distro.type == 'rpm-zypper'
         run: |
-          zypper --non-interactive --no-gpg-checks install -y ./packages/barestats-*.x86_64.rpm
+          for i in 1 2 3; do zypper --non-interactive refresh && break || sleep 3; done
+          zypper --non-interactive --no-gpg-checks install --force-resolution -y ./packages/barestats-*.x86_64.rpm
           /usr/bin/barestats --test
           zypper --non-interactive remove -y barestats
           test ! -f /usr/bin/barestats
