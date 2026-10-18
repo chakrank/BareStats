@@ -147,38 +147,34 @@ jobs:
         run: |
           apt-get update
           apt-get install -y ./packages/barestats_*_amd64.deb
-          command -v barestats
           /usr/bin/barestats --test
           apt-get remove -y barestats
-          if command -v barestats; then exit 1; fi
+          test ! -f /usr/bin/barestats
 
       - name: Smoke Test Fedora (.rpm via DNF)
         if: matrix.distro.type == 'rpm-dnf'
         run: |
           dnf install -y ./packages/barestats-*.x86_64.rpm
-          command -v barestats
           /usr/bin/barestats --test
           dnf remove -y barestats
-          if command -v barestats; then exit 1; fi
+          test ! -f /usr/bin/barestats
 
       - name: Smoke Test openSUSE (.rpm via Zypper)
         if: matrix.distro.type == 'rpm-zypper'
         run: |
           zypper --non-interactive --no-gpg-checks install -y ./packages/barestats-*.x86_64.rpm
-          command -v barestats
           /usr/bin/barestats --test
           zypper --non-interactive remove -y barestats
-          if command -v barestats; then exit 1; fi
+          test ! -f /usr/bin/barestats
 
       - name: Smoke Test Arch Linux (.pkg.tar.zst)
         if: matrix.distro.type == 'arch'
         run: |
           pacman -Sy --noconfirm cairo libx11 libxfixes
           pacman -U --noconfirm ./packages/barestats-*.pkg.tar.zst
-          command -v barestats
           /usr/bin/barestats --test
           pacman -R --noconfirm barestats
-          if command -v barestats; then exit 1; fi
+          test ! -f /usr/bin/barestats
 
       - name: Smoke Test Universal Tarball and Raw ELF Executable
         if: matrix.distro.type == 'universal'
@@ -192,10 +188,9 @@ jobs:
           tar -xzf ./packages/barestats-*-linux-x86_64.tar.gz
           cd barestats-*-linux-x86_64
           ./install.sh
-          command -v barestats
           /usr/local/bin/barestats --test
           ./uninstall.sh
-          if command -v barestats; then exit 1; fi
+          test ! -f /usr/local/bin/barestats
 
   build-and-verify-macos:
     name: Build & Verify macOS (${{ matrix.os }})
