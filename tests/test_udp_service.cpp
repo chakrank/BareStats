@@ -797,18 +797,19 @@ bool Test_UdpStreamer_DiscoverAllowedRigsAndWireRigIdMismatch() {
     return true;
 }
 
-// AUDIT-P1-06: Systemd ExecStart and WorkingDirectory paths must be quoted
+// AUDIT-P1-06: Systemd ExecStart quotes on spaces; WorkingDirectory must not be quoted
 bool Test_ServiceInstaller_SystemdQuoting() {
-    fs::path exe = "/opt/bare stats/barestats";
+    fs::path exe_with_space = "/opt/bare stats/barestats";
+    fs::path exe_no_space = "/usr/local/bin/barestats";
     fs::path work = "/var/lib/bare stats";
 
-    std::string root_unit = GenerateSystemdServiceUnit(exe, work, true);
-    TEST_ASSERT(root_unit.find("ExecStart=\"/opt/bare stats/barestats\"") != std::string::npos, "Root ExecStart must be quoted");
-    TEST_ASSERT(root_unit.find("WorkingDirectory=\"/var/lib/bare stats\"") != std::string::npos, "Root WorkingDirectory must be quoted");
+    std::string root_unit = GenerateSystemdServiceUnit(exe_with_space, work, true);
+    TEST_ASSERT(root_unit.find("ExecStart=\"/opt/bare stats/barestats\"") != std::string::npos, "Root ExecStart with spaces must be quoted");
+    TEST_ASSERT(root_unit.find("WorkingDirectory=/var/lib/bare stats\n") != std::string::npos, "Root WorkingDirectory must not have quotes");
 
-    std::string user_unit = GenerateSystemdServiceUnit(exe, work, false);
-    TEST_ASSERT(user_unit.find("ExecStart=\"/opt/bare stats/barestats\"") != std::string::npos, "User ExecStart must be quoted");
-    TEST_ASSERT(user_unit.find("WorkingDirectory=\"/var/lib/bare stats\"") != std::string::npos, "User WorkingDirectory must be quoted");
+    std::string user_unit = GenerateSystemdServiceUnit(exe_no_space, work, false);
+    TEST_ASSERT(user_unit.find("ExecStart=/usr/local/bin/barestats\n") != std::string::npos, "User ExecStart without spaces must not be quoted");
+    TEST_ASSERT(user_unit.find("WorkingDirectory=/var/lib/bare stats\n") != std::string::npos, "User WorkingDirectory must not have quotes");
 
     return true;
 }

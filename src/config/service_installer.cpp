@@ -48,6 +48,10 @@ fs::path GetServiceStagingDirectory() {
 }
 
 std::string GenerateSystemdServiceUnit(const fs::path& exe_path, const fs::path& work_dir, bool is_root) {
+    std::string exe_str = exe_path.string();
+    std::string exe_formatted = (exe_str.find(' ') != std::string::npos) ? ("\"" + exe_str + "\"") : exe_str;
+    std::string work_str = work_dir.string();
+
     if (is_root) {
         return
             "[Unit]\n"
@@ -55,8 +59,8 @@ std::string GenerateSystemdServiceUnit(const fs::path& exe_path, const fs::path&
             "After=network.target\n\n"
             "[Service]\n"
             "Type=simple\n"
-            "ExecStart=\"" + exe_path.string() + "\"\n"
-            "WorkingDirectory=\"" + work_dir.string() + "\"\n"
+            "ExecStart=" + exe_formatted + "\n"
+            "WorkingDirectory=" + work_str + "\n"
             "ConfigurationDirectory=barestats\n"
             "Restart=always\n"
             "RestartSec=5\n"
@@ -74,8 +78,8 @@ std::string GenerateSystemdServiceUnit(const fs::path& exe_path, const fs::path&
             "After=network.target\n\n"
             "[Service]\n"
             "Type=simple\n"
-            "ExecStart=\"" + exe_path.string() + "\"\n"
-            "WorkingDirectory=\"" + work_dir.string() + "\"\n"
+            "ExecStart=" + exe_formatted + "\n"
+            "WorkingDirectory=" + work_str + "\n"
             "Restart=always\n"
             "RestartSec=5\n\n"
             "[Install]\n"
