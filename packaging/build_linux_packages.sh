@@ -64,6 +64,17 @@ if command -v dpkg-deb >/dev/null 2>&1; then
             if ! grep -q "^License:" "${DEB_TMP}/DEBIAN/control"; then
                 sed -i '/^Maintainer:/a License: MIT' "${DEB_TMP}/DEBIAN/control"
             fi
+            # Ensure maintainer scripts are executable (0755) and control files are 0644
+            find "${DEB_TMP}/DEBIAN" -type f -exec chmod 0755 {} +
+            if [ -f "${DEB_TMP}/DEBIAN/control" ]; then
+                chmod 0644 "${DEB_TMP}/DEBIAN/control"
+            fi
+            if [ -f "${DEB_TMP}/DEBIAN/md5sums" ]; then
+                chmod 0644 "${DEB_TMP}/DEBIAN/md5sums"
+            fi
+            if [ -f "${DEB_TMP}/DEBIAN/conffiles" ]; then
+                chmod 0644 "${DEB_TMP}/DEBIAN/conffiles"
+            fi
             dpkg-deb --root-owner-group -b "${DEB_TMP}" "$deb"
             rm -rf "${DEB_TMP}"
         fi
