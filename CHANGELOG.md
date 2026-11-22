@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0] - 2026-10-20
+
+### Added
+- **Distributed AI Inference Telemetry & Satellite Architecture:**
+  - **Single-Binary Execution:** Automatic mode matrix resolution (`AppMode::CommandCenter`, `AppMode::HeadlessSatellite`, `AppMode::Hybrid`, `AppMode::FirstRun`) via physical executable path resolution and configuration file presence.
+  - **Encrypted UDP Streaming Pipeline:** 436-byte wire protocol powered by embedded Monocypher v4 (`XChaCha20-Poly1305`) authenticated encryption with session ID and 64-packet bitmap sliding-window replay protection.
+  - **Engine-Agnostic LLM HTTP Scraper:** Non-blocking asynchronous scraper supporting Ollama (`/api/ps`), vLLM (`/metrics`), llama.cpp (`/slots`, `/metrics`), TGI (`/metrics`), and SGLang (`/metrics`) with 300 ms timeout and 3-strike exponential backoff.
+  - **Zero-Allocation Model Name Condenser:** Fast manual badge extractor and 7-stage state machine (Thinking, Generating, BurstHold 3s freeze, Compacting, Idle, Loading, Offline) with duplicate parameter badge clamping.
+  - **Dynamic Layout Addressing & Cascade Resolver:** Flexible grid addressing (`rig1:tps`, `rig1:model`, `rig1:gpu`, `llm`) and 3-tier generic fallback resolver across local and remote cluster nodes.
+  - **Lock-Free Concurrency Seqlock:** Trivially copyable snapshot synchronization between network scraper threads and the 60 FPS compositor with 64-bit FNV-1a dirty hashing for true 0.00% idle overhead.
+  - **Native OS Service Installation:** One-command headless satellite service installation via `BareStats.exe --service-install` (Windows Task Scheduler COM `ITaskService`), Linux `systemd`, and macOS `launchd`.
+  - **System Tray Satellite Export:** 1-click **"Export satellite.ini"** action from Command Center tray menu with automated 256-bit AEAD key generation and configuration schema migration to version 140.
+
+---
+
 ## [1.3.0] - 2026-10-18
 
 ### Added

@@ -2,6 +2,7 @@
 set -e
 
 if [ "$1" = "configure" ]; then
+    rm -f /usr/share/applications/io.github.chakrank.barestats.desktop
     if which update-desktop-database >/dev/null 2>&1; then
         update-desktop-database -q /usr/share/applications || true
     fi

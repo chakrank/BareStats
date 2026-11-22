@@ -47,6 +47,7 @@ private:
 
     bool initialized_ = false;
     std::string activeInterface_;
+    std::string prevAdapterName_;
     uint64_t prevRxBytes_ = 0;
     uint64_t prevTxBytes_ = 0;
     std::chrono::steady_clock::time_point prevTimePoint_{};

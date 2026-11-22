@@ -3,7 +3,7 @@ Version=1.5
 Type=Application
 Name=BareStats
 GenericName=System Telemetry Overlay
-Comment=BareStats - Ultra-lightweight native telemetry overlay
+Comment=Ultra-lightweight native telemetry overlay
 Exec=barestats
 Icon=barestats
 Terminal=false
@@ -12,7 +12,7 @@ Keywords=telemetry;system;cpu;gpu;memory;network;overlay;
 StartupNotify=false
 X-GNOME-Autostart-enabled=true
 StartupWMClass=BareStats
-Actions=MoveMode;ResetBottom;NextPreset;Toggle;ReloadConfig;Exit;
+Actions=MoveMode;ResetBottom;NextPreset;Toggle;ReloadConfig;ExportSatellite;Exit;
 
 [Desktop Action MoveMode]
 Name=Reposition Mode (Drag Overlay)
@@ -33,6 +33,10 @@ Exec=barestats --toggle
 [Desktop Action ReloadConfig]
 Name=Reload Configuration
 Exec=barestats --reload
+
+[Desktop Action ExportSatellite]
+Name=Export satellite.ini (for Remote Rig)
+Exec=barestats --export-satellite
 
 [Desktop Action Exit]
 Name=Exit BareStats

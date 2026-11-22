@@ -156,7 +156,7 @@ def main():
     build_dir = repo_root / args.build_dir
 
     print_separator()
-    print("BareStats Automated Cross-Platform Test & Variant Runner (v1.3.0)")
+    print("BareStats Automated Cross-Platform Test & Variant Runner (v1.4.0)")
     print(f"Platform: {sys.platform} | Build Type: {args.build_type} | Root: {repo_root}")
     print_separator()
 

@@ -21,6 +21,8 @@ bool Test_UniversalGraphics_D3dKmtAndDxgi() {
     LUID fakeLuid{ 0, 0 };
     auto util = d3dKmt.QueryEngineUtilization(fakeLuid);
     TEST_ASSERT(!util.has_value(), "Fake LUID must return nullopt gracefully");
+    auto mem = d3dKmt.QueryMemoryUsage(fakeLuid);
+    TEST_ASSERT(!mem.has_value(), "Fake LUID must return nullopt memory gracefully");
 
     return true;
 }

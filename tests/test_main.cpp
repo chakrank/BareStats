@@ -59,7 +59,7 @@ int g_failedTests = 0;
 
 int main() {
     std::cout << "============================================================" << std::endl;
-    std::cout << "BareStats Automated Modular Verification Test Suite (v1.3.0)" << std::endl;
+    std::cout << "BareStats Automated Modular Verification Test Suite (v1.4.0)" << std::endl;
     std::cout << "============================================================" << std::endl;
 
     // 1. Common Metrics & Telemetry Engine Tests
@@ -108,6 +108,8 @@ int main() {
     RUN_TEST(Test_LinuxOverlay_DirtyHashBypass);
     RUN_TEST(Test_LinuxOverlay_IslandsLayoutMath);
     RUN_TEST(Test_LinuxOverlay_CustomGridWithEmptyCells);
+    RUN_TEST(Test_LinuxOverlay_ColSpanAndColIndexLayout);
+    RUN_TEST(Test_Overlay_PositionPresetCyclingSequence);
 
     // 6. Configuration, Migration & INI Parser Tests
     RUN_TEST(Test_Config_ParsingAndHotReload);
@@ -116,6 +118,114 @@ int main() {
     RUN_TEST(Test_IniParser_RoundtripAndComments);
     RUN_TEST(Test_Config_MalformedAndBoundaryClamping);
     RUN_TEST(Test_Config_PriorityAndCustomPath);
+    RUN_TEST(Test_Config_LayoutSectionAndClusterAliases);
+    RUN_TEST(Test_Formatter_GridOrderAndRigAliases);
+
+    // 7. Crypto & Distributed Wire Protocol Tests (v1.4)
+    RUN_TEST(Test_WireProtocol_StructSizesAndAlignment);
+    RUN_TEST(Test_Crypto_RandomAndHexConversion);
+    RUN_TEST(Test_Crypto_AeadRoundtripAndTamperRejection);
+    RUN_TEST(Test_WireProtocol_PackAndUnpack);
+    RUN_TEST(Test_WireProtocol_ReplaySlidingWindow);
+    RUN_TEST(Test_WireProtocol_WallClockFreshness);
+
+    // 8. Engine-Agnostic HTTP Scraper Tests (v1.4 Step 2)
+    RUN_TEST(Test_HttpClient_ParseUrlAndDechunk);
+    RUN_TEST(Test_JsonMini_Parsers);
+    RUN_TEST(Test_LlmCollector_PrometheusParsing);
+    RUN_TEST(Test_LlmCollector_OllamaParsing);
+    RUN_TEST(Test_LlmCollector_LlamaCppSlotsParsing);
+    RUN_TEST(Test_LlmCollector_OpenAiModelsParsing);
+    RUN_TEST(Test_LlmCollector_3StrikeDegradationAndBurstHold);
+
+    // 9. Model Name Condenser & Multi-Model Residency Tests (v1.4 Step 3)
+    RUN_TEST(Test_ModelNameCondenser_TableTraces);
+    RUN_TEST(Test_ModelNameCondenser_ParamBadges);
+    RUN_TEST(Test_ModelNameCondenser_EmbeddingFilter);
+    RUN_TEST(Test_ModelNameCondenser_Formatter7Stages);
+    RUN_TEST(Test_ModelNameCondenser_MultiModelCoResidency);
+    RUN_TEST(Test_LlmCollector_OllamaEmbeddingFiltering);
+
+    // 10. Dynamic Endpoint Pool & Spatial Anchoring Tests (v1.4 Step 4)
+    RUN_TEST(Test_LayoutEngine_ParseEndpoints);
+    RUN_TEST(Test_LayoutEngine_ParseGridToken);
+    RUN_TEST(Test_LlmResolver_PriorityCascade);
+    RUN_TEST(Test_LlmResolver_FormatGridCellText);
+    RUN_TEST(Test_IslandWindowManager_Visibility);
+
+    // 11. Single-Binary Architecture & File-Presence Mode Matrix Tests (v1.4 Step 5)
+    RUN_TEST(Test_SingleBinary_ExecutableDirectoryResolution);
+    RUN_TEST(Test_SingleBinary_EvaluateAppMode);
+    RUN_TEST(Test_SingleBinary_TelemetryEngineAppMode);
+    RUN_TEST(Test_SingleBinary_StartBackgroundWorkers_CommandCenter);
+    RUN_TEST(Test_SingleBinary_FeedDeduplication);
+    RUN_TEST(Test_SingleBinary_DynamicLoaderIsolation);
+
+    // 12. Encrypted UDP Satellite Push & Service Installer Tests (v1.4 Step 6)
+    RUN_TEST(Test_UdpStreamer_TransmitterAndReceiverRoundtrip);
+    RUN_TEST(Test_UdpStreamer_TamperAndWrongKeyRejection);
+    RUN_TEST(Test_UdpStreamer_SubnetAutoDiscoveryHandshake);
+    RUN_TEST(Test_UdpStreamer_TransactionChallengeReplayRejection);
+    RUN_TEST(Test_UdpStreamer_ContinuousBroadcastAndDualPathDeduplication);
+    RUN_TEST(Test_UdpStreamer_MultiTargetDualCommandCenter);
+    RUN_TEST(Test_ServiceInstaller_Validation);
+    RUN_TEST(Test_ServiceInstaller_UnprivilegedInstallation);
+    RUN_TEST(Test_ConfigManager_ExportSatelliteIni);
+    RUN_TEST(Test_ResolveSatelliteExportPath);
+
+    // 13. Asynchronous Threading & Lock-Free Seqlock Tests (v1.4 Step 7)
+    RUN_TEST(Test_Seqlock_TriviallyCopyableGuarantees);
+    RUN_TEST(Test_Seqlock_HighContentionStress);
+    RUN_TEST(Test_Seqlock_HashSnapshot0PercentIdle);
+    RUN_TEST(Test_HttpClient_DnsCachingAndBackoff);
+
+    // 14. In-Memory Defaults, Unified Mode Arbitration & High-Signal Logging (v1.4 Step 9)
+    RUN_TEST(Test_SingleBinary_InMemoryDefaultsAndNonDestructiveLoad);
+    RUN_TEST(Test_SingleBinary_StrictBinaryHeadlessParsing);
+    RUN_TEST(Test_SingleBinary_LoggerRotation);
+    RUN_TEST(Test_SingleBinary_NoCrossRigLlmContamination);
+    RUN_TEST(Test_SingleBinary_UdpSatelliteTimeoutAndOfflineTransition);
+    RUN_TEST(Test_SingleBinary_MultiEndpointAggregation);
+
+    // 15. Phase 2 Comprehensive LLM Verification Suites (Tests 1 to 62)
+    RUN_TEST(Test_LLM_2A_OllamaAdapter);
+    RUN_TEST(Test_LLM_2B_LlamaCppAdapter);
+    RUN_TEST(Test_LLM_2C_PrometheusAdapter);
+    RUN_TEST(Test_LLM_2D_OpenAiCompatAdapter);
+    RUN_TEST(Test_LLM_2E_AutoNegotiation);
+    RUN_TEST(Test_LLM_2F_3StrikeAndBackoff);
+    RUN_TEST(Test_LLM_2G_TokenParsingAndResolver);
+    RUN_TEST(Test_LLM_2H_MultiGpuCorrelation);
+    RUN_TEST(Test_LLM_2I_FormattingAndDisplay);
+
+    // 16. Security Regression Test Suite (Audit Findings VULN-01 to VULN-09)
+    RUN_TEST(Test_WireProtocol_ReplaySessionMonotonicity);
+    RUN_TEST(Test_UdpStreamer_RejectUnauthorizedSenderRig);
+    RUN_TEST(Test_UdpStreamer_TrackerPoolStarvationDefense);
+    RUN_TEST(Test_ServiceInstaller_SystemdPermissionConsistency);
+    RUN_TEST(Test_ServiceInstaller_LaunchdPathWhitespaceHandling);
+    RUN_TEST(Test_Config_PrivateKeyRestrictedFileAcl);
+    RUN_TEST(Test_UdpStreamer_UnauthenticatedHeaderLogSanitization);
+    RUN_TEST(Test_LlmCollector_PrometheusNegativeCounterUnderflow);
+    RUN_TEST(Test_JsonMini_EscapedBackslashStringParsing);
+    RUN_TEST(Test_LlmCollector_NonTerminatedWireStringSafety);
+    RUN_TEST(Test_ServiceInstaller_WorkingDirectorySatelliteDiscovery);
+    RUN_TEST(Test_Config_ClusterAllowedRigsPropagation);
+    RUN_TEST(Test_WireProtocol_CapCounterAdvanceStep);
+    RUN_TEST(Test_UdpStreamer_EvictionReplayResistance);
+    RUN_TEST(Test_TelemetryEngine_ConcurrentClusterWriters);
+    RUN_TEST(Test_ServiceInstaller_LaunchdShellMetacharacterSanitization);
+    RUN_TEST(Test_Logger_MaxRotatedArchivesRetention);
+    RUN_TEST(Test_LlmCollector_PrometheusNegativeAndOverflowMetricsClamping);
+    RUN_TEST(Test_Crypto_RejectLowOrderSharedSecrets);
+    RUN_TEST(Test_UdpStreamer_DiscoverAllowedRigsAndWireRigIdMismatch);
+    RUN_TEST(Test_ServiceInstaller_SystemdQuoting);
+    RUN_TEST(Test_Cluster_CaseInsensitiveRigAndRemoteGpuCompleteness);
+    RUN_TEST(Test_TelemetryEngine_DynamicReceiverActivationAndFanPack);
+    RUN_TEST(Test_UdpStreamer_DiscoveryRateLimitingAndTargetIsolation);
+    RUN_TEST(Test_Config_ShowTrayIconPriorityAndMigration);
+    RUN_TEST(Test_LinuxProc_NetworkInterfaceSwitchAndGatewayReevaluation);
+    RUN_TEST(Test_UnifiedLayout_CaseSensitivityAndDeduplication);
 
     std::cout << "============================================================" << std::endl;
     std::cout << "Test Summary: " << g_passedTests << "/" << g_totalTests << " passed";

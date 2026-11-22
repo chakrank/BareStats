@@ -58,14 +58,17 @@ bool NvmlCollector::LoadNvml(const char* customDllPath) {
     if (!customDllPath_.empty()) {
         nvmlDll_ = LOAD_LIB(customDllPath_.c_str());
     } else {
+#ifdef BARESTATS_ENABLE_TEST_MOCKS
         char envBuf[MAX_PATH];
         DWORD len = GetEnvironmentVariableA("BARESTATS_MOCK_NVML_DLL", envBuf, MAX_PATH);
         if (len > 0 && len < MAX_PATH) {
             nvmlDll_ = LOAD_LIB(envBuf);
-        } else {
-            nvmlDll_ = LOAD_LIB("nvml.dll");
+        } else
+#endif
+        {
+            nvmlDll_ = LoadLibraryExA("nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
             if (!nvmlDll_) {
-                nvmlDll_ = LOAD_LIB("C:\\Windows\\System32\\nvml.dll");
+                nvmlDll_ = LoadLibraryExA("C:\\Windows\\System32\\nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
             }
             if (!nvmlDll_) {
                 nvmlDll_ = LOAD_LIB("C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvml.dll");
@@ -76,10 +79,13 @@ bool NvmlCollector::LoadNvml(const char* customDllPath) {
     if (!customDllPath_.empty()) {
         nvmlDll_ = LOAD_LIB(customDllPath_.c_str());
     } else {
+#ifdef BARESTATS_ENABLE_TEST_MOCKS
         const char* envMock = std::getenv("BARESTATS_MOCK_NVML_SO");
         if (envMock && envMock[0] != '\0') {
             nvmlDll_ = LOAD_LIB(envMock);
-        } else {
+        } else
+#endif
+        {
             nvmlDll_ = LOAD_LIB("libnvidia-ml.so.1");
             if (!nvmlDll_) {
                 nvmlDll_ = LOAD_LIB("libnvidia-ml.so");

@@ -1,8 +1,10 @@
 #include "ini_parser.h"
+#include "util/logger.h"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 
 namespace BareStats {
 
@@ -109,11 +111,30 @@ bool IniDocument::LoadFromString(const std::string& content) {
 }
 
 bool IniDocument::Save(const std::string& filePath) const {
+    std::string content = ToString();
+    std::string tempPath = filePath + ".tmp";
+    {
+        std::ofstream file(tempPath, std::ios::binary | std::ios::trunc);
+        if (file.is_open()) {
+            file.write(content.data(), static_cast<std::streamsize>(content.size()));
+            file.flush();
+            if (file.good()) {
+                file.close();
+                std::error_code ec;
+                std::filesystem::rename(tempPath, filePath, ec);
+                if (!ec) {
+                    return true;
+                }
+                std::filesystem::remove(tempPath, ec);
+            }
+        }
+    }
+
+    // Direct fallback if temp file or rename failed
     std::ofstream file(filePath, std::ios::binary | std::ios::trunc);
     if (!file.is_open()) {
         return false;
     }
-    std::string content = ToString();
     file.write(content.data(), static_cast<std::streamsize>(content.size()));
     return file.good();
 }
@@ -140,6 +161,33 @@ bool IniDocument::HasKey(const std::string& section, const std::string& key) con
     return itSec->second.find(keyLower) != itSec->second.end();
 }
 
+bool IniDocument::RemoveKey(const std::string& section, const std::string& key) {
+    std::string secLower = ToLower(section);
+    std::string keyLower = ToLower(key);
+    auto secIt = keyIndexMap_.find(secLower);
+    if (secIt == keyIndexMap_.end()) return false;
+    auto keyIt = secIt->second.find(keyLower);
+    if (keyIt == secIt->second.end()) return false;
+
+    size_t lineIdx = keyIt->second;
+    lines_.erase(lines_.begin() + lineIdx);
+
+    // Rebuild index maps
+    keyIndexMap_.clear();
+    sectionLastLineMap_.clear();
+    for (size_t i = 0; i < lines_.size(); ++i) {
+        if (lines_[i].type == LineType::SectionHeader) {
+            sectionLastLineMap_[lines_[i].section] = i;
+        } else if (lines_[i].type == LineType::KeyValue) {
+            keyIndexMap_[lines_[i].section][lines_[i].key] = i;
+            sectionLastLineMap_[lines_[i].section] = i;
+        } else if (!lines_[i].section.empty()) {
+            sectionLastLineMap_[lines_[i].section] = i;
+        }
+    }
+    return true;
+}
+
 std::string IniDocument::GetString(const std::string& section, const std::string& key, const std::string& defaultVal) const {
     std::string secLower = ToLower(section);
     std::string keyLower = ToLower(key);
@@ -156,6 +204,7 @@ int IniDocument::GetInt(const std::string& section, const std::string& key, int 
     try {
         return std::stoi(str, nullptr, 0); // Supports dec, hex (0x...), octal
     } catch (...) {
+        LOG_WARN("CONFIG", "Invalid integer for [" + section + "] " + key + " = '" + str + "'; falling back to default " + std::to_string(defaultVal));
         return defaultVal;
     }
 }
@@ -165,6 +214,7 @@ bool IniDocument::GetBool(const std::string& section, const std::string& key, bo
     if (str.empty()) return defaultVal;
     if (str == "1" || str == "true" || str == "yes" || str == "on") return true;
     if (str == "0" || str == "false" || str == "no" || str == "off") return false;
+    LOG_WARN("CONFIG", "Invalid boolean for [" + section + "] " + key + " = '" + str + "'; falling back to default " + (defaultVal ? "true" : "false"));
     return defaultVal;
 }
 
@@ -174,6 +224,7 @@ double IniDocument::GetDouble(const std::string& section, const std::string& key
     try {
         return std::stod(str);
     } catch (...) {
+        LOG_WARN("CONFIG", "Invalid number for [" + section + "] " + key + " = '" + str + "'; falling back to default " + std::to_string(defaultVal));
         return defaultVal;
     }
 }

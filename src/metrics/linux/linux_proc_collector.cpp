@@ -157,6 +157,7 @@ LinuxProcNetworkCollector::LinuxProcNetworkCollector(std::string procNetDevPath,
 void LinuxProcNetworkCollector::Reset() {
     initialized_ = false;
     activeInterface_.clear();
+    prevAdapterName_.clear();
     prevRxBytes_ = 0;
     prevTxBytes_ = 0;
     prevTimePoint_ = {};
@@ -258,6 +259,25 @@ NetworkMetrics LinuxProcNetworkCollector::Collect() {
         return metrics;
     }
 
+    // Re-evaluate gateway interface if current activeInterface_ has 0 delta while another non-virtual interface has active traffic
+    if (initialized_ && !activeInterface_.empty()) {
+        const IfaceRecord* curRec = nullptr;
+        bool otherHasTraffic = false;
+        for (const auto& r : records) {
+            if (r.name == activeInterface_) {
+                curRec = &r;
+            } else if (!IsVirtualOrIgnoredInterface(r.name) && (r.rxBytes > 0 || r.txBytes > 0)) {
+                otherHasTraffic = true;
+            }
+        }
+        if (curRec && curRec->rxBytes == prevRxBytes_ && curRec->txBytes == prevTxBytes_ && otherHasTraffic) {
+            std::string newGw = DetectDefaultGatewayInterface(procNetRoutePath_);
+            if (!newGw.empty() && newGw != activeInterface_) {
+                activeInterface_ = newGw;
+            }
+        }
+    }
+
     // Match primary adapter:
     // 1. Exact match with activeInterface_
     // 2. First non-virtual adapter with non-zero traffic
@@ -310,8 +330,19 @@ NetworkMetrics LinuxProcNetworkCollector::Collect() {
     if (!initialized_) {
         prevRxBytes_ = matched->rxBytes;
         prevTxBytes_ = matched->txBytes;
+        prevAdapterName_ = matched->name;
         prevTimePoint_ = now;
         initialized_ = true;
+        return metrics;
+    }
+
+    if (matched->name != prevAdapterName_) {
+        prevRxBytes_ = matched->rxBytes;
+        prevTxBytes_ = matched->txBytes;
+        prevAdapterName_ = matched->name;
+        prevTimePoint_ = now;
+        metrics.rxBytesPerSec = 0;
+        metrics.txBytesPerSec = 0;
         return metrics;
     }
 
@@ -329,6 +360,7 @@ NetworkMetrics LinuxProcNetworkCollector::Collect() {
 
     prevRxBytes_ = matched->rxBytes;
     prevTxBytes_ = matched->txBytes;
+    prevAdapterName_ = matched->name;
     prevTimePoint_ = now;
 
     return metrics;

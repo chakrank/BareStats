@@ -15,6 +15,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <unordered_map>
 
 namespace BareStats {
 
@@ -46,11 +47,15 @@ static std::wstring Utf8ToWideString(const std::string& str) {
 }
 
 struct NetworkCollector::Impl {
+    struct InterfaceHistory {
+        uint64_t prevIn = 0;
+        uint64_t prevOut = 0;
+        bool hasSample = false;
+    };
+
     bool initialized = false;
-    uint64_t prevInBytes = 0;
-    uint64_t prevOutBytes = 0;
     std::chrono::steady_clock::time_point prevTime;
-    std::string primaryInterfaceName;
+    std::unordered_map<std::string, InterfaceHistory> ifaceHistory;
 
     Impl() {
         prevTime = std::chrono::steady_clock::now();
@@ -59,7 +64,7 @@ struct NetworkCollector::Impl {
     static bool IsVirtualOrFilteredInterface(const char* name) {
         if (!name) return true;
         static const char* const prefixes[] = {
-            "lo", "utun", "gif", "stf", "bridge", "llw", "awdl", "ipsec", "anpi", "pktap", "p2p"
+            "lo", "gif", "stf", "bridge", "llw", "awdl", "pktap"
         };
         for (const auto* pfx : prefixes) {
             size_t pfxLen = std::strlen(pfx);
@@ -70,45 +75,6 @@ struct NetworkCollector::Impl {
         return false;
     }
 
-    static std::string FindDefaultGatewayInterface() {
-        int mib[6] = { CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_DUMP, 0 };
-        size_t needed = 0;
-        if (sysctl(mib, 6, nullptr, &needed, nullptr, 0) < 0 || needed == 0) {
-            return "";
-        }
-
-        std::vector<char> buf(needed);
-        if (sysctl(mib, 6, buf.data(), &needed, nullptr, 0) < 0) {
-            return "";
-        }
-
-        char* next = buf.data();
-        char* end = buf.data() + needed;
-
-        while (next < end) {
-            struct rt_msghdr* rtm = reinterpret_cast<struct rt_msghdr*>(next);
-            if (rtm->rtm_msglen == 0) break;
-            next += rtm->rtm_msglen;
-
-            if (rtm->rtm_flags & RTF_GATEWAY) {
-                struct sockaddr* sa = reinterpret_cast<struct sockaddr*>(rtm + 1);
-                if (rtm->rtm_addrs & RTA_DST) {
-                    if (sa->sa_family == AF_INET) {
-                        struct sockaddr_in* sin = reinterpret_cast<struct sockaddr_in*>(sa);
-                        if (sin->sin_addr.s_addr == 0) { // Default route 0.0.0.0
-                            char ifName[IF_NAMESIZE] = { 0 };
-                            if (if_indextoname(rtm->rtm_index, ifName)) {
-                                return std::string(ifName);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        return "";
-    }
-
     NetworkMetrics Collect() {
         NetworkMetrics metrics{};
 
@@ -117,83 +83,73 @@ struct NetworkCollector::Impl {
             return metrics;
         }
 
-        std::string defaultIf = FindDefaultGatewayInterface();
+        auto now = std::chrono::steady_clock::now();
+        double elapsedSec = std::chrono::duration<double>(now - prevTime).count();
 
-        uint64_t totalIn = 0;
-        uint64_t totalOut = 0;
-        bool foundTarget = false;
-        std::string chosenIf;
+        uint64_t totalActiveIn = 0;
+        uint64_t totalActiveOut = 0;
+        uint64_t totalRxAccum = 0;
+        uint64_t totalTxAccum = 0;
+        uint64_t maxDelta = 0;
+        std::string activeIf;
 
-        // First pass: match the default gateway interface if available
-        if (!defaultIf.empty()) {
-            for (struct ifaddrs* ifa = ifap; ifa != nullptr; ifa = ifa->ifa_next) {
-                if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_LINK) continue;
-                if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK)) continue;
+        for (struct ifaddrs* ifa = ifap; ifa != nullptr; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_LINK) continue;
+            if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK)) continue;
+            if (IsVirtualOrFilteredInterface(ifa->ifa_name)) continue;
 
-                if (defaultIf == ifa->ifa_name && ifa->ifa_data) {
-                    struct if_data* ifd = reinterpret_cast<struct if_data*>(ifa->ifa_data);
-                    totalIn = ifd->ifi_ibytes;
-                    totalOut = ifd->ifi_obytes;
-                    chosenIf = ifa->ifa_name;
-                    foundTarget = true;
-                    break;
-                }
-            }
-        }
+            if (ifa->ifa_data) {
+                struct if_data* ifd = reinterpret_cast<struct if_data*>(ifa->ifa_data);
+                std::string ifName = ifa->ifa_name;
+                uint64_t curIn = ifd->ifi_ibytes;
+                uint64_t curOut = ifd->ifi_obytes;
 
-        // Second pass: fallback to primary physical adapter (e.g. en0, en1) with active traffic
-        if (!foundTarget) {
-            uint64_t bestTraffic = 0;
-            for (struct ifaddrs* ifa = ifap; ifa != nullptr; ifa = ifa->ifa_next) {
-                if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_LINK) continue;
-                if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK)) continue;
-                if (IsVirtualOrFilteredInterface(ifa->ifa_name)) continue;
+                totalRxAccum += curIn;
+                totalTxAccum += curOut;
 
-                if (ifa->ifa_data) {
-                    struct if_data* ifd = reinterpret_cast<struct if_data*>(ifa->ifa_data);
-                    uint64_t traffic = ifd->ifi_ibytes + ifd->ifi_obytes;
-                    if (traffic > bestTraffic || chosenIf.empty()) {
-                        bestTraffic = traffic;
-                        totalIn = ifd->ifi_ibytes;
-                        totalOut = ifd->ifi_obytes;
-                        chosenIf = ifa->ifa_name;
-                        foundTarget = true;
+                auto& hist = ifaceHistory[ifName];
+                if (hist.hasSample && elapsedSec > 0.05) {
+                    uint64_t dIn = (curIn >= hist.prevIn) ? (curIn - hist.prevIn) : 0;
+                    uint64_t dOut = (curOut >= hist.prevOut) ? (curOut - hist.prevOut) : 0;
+
+                    totalActiveIn += dIn;
+                    totalActiveOut += dOut;
+
+                    if ((dIn + dOut) > maxDelta || activeIf.empty()) {
+                        maxDelta = dIn + dOut;
+                        activeIf = ifName;
                     }
+                } else if (activeIf.empty()) {
+                    activeIf = ifName;
                 }
+
+                hist.prevIn = curIn;
+                hist.prevOut = curOut;
+                hist.hasSample = true;
             }
         }
 
         freeifaddrs(ifap);
 
-        if (!foundTarget) {
-            return metrics;
+        if (activeIf.empty()) {
+            activeIf = "en0";
         }
 
-        auto now = std::chrono::steady_clock::now();
         metrics.isAvailable = true;
-        metrics.primaryAdapterName = chosenIf;
-        metrics.primaryAdapter = Utf8ToWideString(chosenIf);
-        metrics.totalRxBytes = totalIn;
-        metrics.totalTxBytes = totalOut;
+        metrics.primaryAdapterName = activeIf;
+        metrics.primaryAdapter = Utf8ToWideString(activeIf);
+        metrics.totalRxBytes = totalRxAccum;
+        metrics.totalTxBytes = totalTxAccum;
 
         if (!initialized) {
-            prevInBytes = totalIn;
-            prevOutBytes = totalOut;
             prevTime = now;
             initialized = true;
             return metrics;
         }
 
-        double elapsedSec = std::chrono::duration<double>(now - prevTime).count();
         if (elapsedSec > 0.05) {
-            uint64_t diffIn = (totalIn >= prevInBytes) ? (totalIn - prevInBytes) : 0;
-            uint64_t diffOut = (totalOut >= prevOutBytes) ? (totalOut - prevOutBytes) : 0;
-
-            metrics.rxBytesPerSec = static_cast<uint64_t>(std::round(static_cast<double>(diffIn) / elapsedSec));
-            metrics.txBytesPerSec = static_cast<uint64_t>(std::round(static_cast<double>(diffOut) / elapsedSec));
-
-            prevInBytes = totalIn;
-            prevOutBytes = totalOut;
+            metrics.rxBytesPerSec = static_cast<uint64_t>(std::round(static_cast<double>(totalActiveIn) / elapsedSec));
+            metrics.txBytesPerSec = static_cast<uint64_t>(std::round(static_cast<double>(totalActiveOut) / elapsedSec));
             prevTime = now;
         }
 

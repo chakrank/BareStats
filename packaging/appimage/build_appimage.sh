@@ -46,24 +46,41 @@ exec "${HERE}/usr/bin/barestats" "$@"
 EOF
 chmod +x "${APPDIR}/AppRun"
 
-# 3. Download linuxdeploy if not present
+# 3. Download and cryptographically verify linuxdeploy if not present
 LINUXDEPLOY="${BUILD_DIR}/linuxdeploy-x86_64.AppImage"
+LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage"
+LINUXDEPLOY_SHA256="c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
+
 if [ ! -f "${LINUXDEPLOY}" ]; then
+    echo "Downloading linuxdeploy (${LINUXDEPLOY_URL})..."
     if command -v curl >/dev/null 2>&1; then
-        curl -sLo "${LINUXDEPLOY}" https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+        curl -sLo "${LINUXDEPLOY}" "${LINUXDEPLOY_URL}"
     elif command -v wget >/dev/null 2>&1; then
-        wget -qO "${LINUXDEPLOY}" https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+        wget -qO "${LINUXDEPLOY}" "${LINUXDEPLOY_URL}"
+    else
+        echo "Error: curl or wget required to fetch linuxdeploy" >&2
+        exit 1
+    fi
+
+    echo "Verifying linuxdeploy cryptographic checksum..."
+    ACTUAL_SHA256="$(sha256sum "${LINUXDEPLOY}" | awk '{print $1}')"
+    if [ "${ACTUAL_SHA256}" != "${LINUXDEPLOY_SHA256}" ]; then
+        echo "Error: linuxdeploy SHA-256 checksum mismatch!" >&2
+        echo "Expected: ${LINUXDEPLOY_SHA256}" >&2
+        echo "Actual:   ${ACTUAL_SHA256}" >&2
+        rm -f "${LINUXDEPLOY}"
+        exit 1
     fi
     chmod +x "${LINUXDEPLOY}"
 fi
 
 # 4. Generate AppImage
 echo "Packaging AppImage..."
-export VERSION="1.3.0"
+export VERSION="1.4.0"
 export APPIMAGE_EXTRACT_AND_RUN=1
 (cd "${BUILD_DIR}" && "${LINUXDEPLOY}" --appdir "${APPDIR}" --output appimage)
 
-mv "${BUILD_DIR}"/BareStats*.AppImage "${OUTPUT_DIR}/BareStats-1.3.0-x86_64.AppImage" 2>/dev/null || \
-mv "${REPO_ROOT}"/BareStats*.AppImage "${OUTPUT_DIR}/BareStats-1.3.0-x86_64.AppImage" 2>/dev/null || true
+mv "${BUILD_DIR}"/BareStats*.AppImage "${OUTPUT_DIR}/BareStats-1.4.0-x86_64.AppImage" 2>/dev/null || \
+mv "${REPO_ROOT}"/BareStats*.AppImage "${OUTPUT_DIR}/BareStats-1.4.0-x86_64.AppImage" 2>/dev/null || true
 
 echo "=== Universal AppImage packaged successfully in: ${OUTPUT_DIR}/ ==="

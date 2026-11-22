@@ -1,6 +1,11 @@
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 #include "linux_overlay.h"
 #include "linux_tray.h"
+#include "util/crypto/crypto_box.h"
+#include "util/os_utils.h"
+#include "util/logger.h"
 #include <iostream>
 #include <cstdlib>
 #include <cstring>
@@ -8,6 +13,7 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <filesystem>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -78,22 +84,32 @@ std::vector<LinuxIslandSlot> LinuxOverlay::LayoutIslands(const AppConfig& config
     const int baseHeight = 18 + slotPaddingY * 2;
 
     int numRows = static_cast<int>(config.customGrid.rows.size());
-    int numCols = 0;
+    int numCols = config.customGrid.numCols;
     for (const auto& rDef : config.customGrid.rows) {
-        if (static_cast<int>(rDef.cells.size()) > numCols) {
-            numCols = static_cast<int>(rDef.cells.size());
+        for (const auto& cell : rDef.cells) {
+            int right = cell.colIndex + (cell.colSpan > 1 ? cell.colSpan : 1);
+            if (right > numCols) {
+                numCols = right;
+            }
         }
     }
     if (numCols <= 0) return slots;
 
-    // Measure cell widths per row/col
-    std::vector<std::vector<int>> cellWidths(numRows, std::vector<int>(numCols, 0));
-    std::vector<std::vector<std::wstring>> cellTexts(numRows, std::vector<std::wstring>(numCols));
+    struct ActiveCell {
+        int r = 0;
+        int ci = 0;
+        int colIndex = 0;
+        int colSpan = 1;
+        std::string token;
+        std::wstring text;
+        int width = 0;
+    };
 
+    std::vector<ActiveCell> activeCells;
     for (int r = 0; r < numRows; ++r) {
         const auto& rDef = config.customGrid.rows[r];
-        for (size_t c = 0; c < rDef.cells.size(); ++c) {
-            const auto& cell = rDef.cells[c];
+        for (size_t ci = 0; ci < rDef.cells.size(); ++ci) {
+            const auto& cell = rDef.cells[ci];
             if (cell.token.empty() || cell.token == ".") continue;
 
             auto segs = Formatter::FormatCell(cell.token, metrics, &config);
@@ -103,22 +119,74 @@ std::vector<LinuxIslandSlot> LinuxOverlay::LayoutIslands(const AppConfig& config
                 cellLen += static_cast<int>(s.text.size());
                 combined += s.text;
             }
-            cellWidths[r][c] = (cellLen * charWidth) + (slotPaddingX * 2);
-            cellTexts[r][c] = std::move(combined);
+            int w = (cellLen * charWidth) + (slotPaddingX * 2);
+            activeCells.push_back({ r, static_cast<int>(ci), cell.colIndex, cell.colSpan > 0 ? cell.colSpan : 1, cell.token, std::move(combined), w });
         }
     }
 
-    // Determine max column width for each column
+    // Pass 1: Single-cell width resolution (colSpan == 1)
     std::vector<int> colWidth(numCols, 0);
-    for (int c = 0; c < numCols; ++c) {
-        int maxW = 0;
-        for (int r = 0; r < numRows; ++r) {
-            if (cellWidths[r][c] > maxW) maxW = cellWidths[r][c];
+    for (const auto& ac : activeCells) {
+        if (ac.colSpan == 1 && ac.colIndex >= 0 && ac.colIndex < numCols) {
+            if (ac.width > colWidth[ac.colIndex]) {
+                colWidth[ac.colIndex] = ac.width;
+            }
         }
-        colWidth[c] = (maxW > 0) ? maxW : 90;
     }
 
-    // Determine column X offsets relative to 0
+    // Pass 2: Base column width resolution for empty / spacer columns
+    int sumKnown = 0;
+    int countKnown = 0;
+    for (int c = 0; c < numCols; ++c) {
+        if (colWidth[c] > 0) {
+            sumKnown += colWidth[c];
+            countKnown++;
+        }
+    }
+
+    int avgColWidth = 0;
+    if (countKnown > 0) {
+        avgColWidth = sumKnown / countKnown;
+    } else {
+        int maxSpannedPerCol = 0;
+        for (const auto& ac : activeCells) {
+            if (ac.colSpan > 0) {
+                int perCol = ac.width / ac.colSpan;
+                if (perCol > maxSpannedPerCol) maxSpannedPerCol = perCol;
+            }
+        }
+        avgColWidth = (maxSpannedPerCol > 0) ? maxSpannedPerCol : 90;
+    }
+
+    for (int c = 0; c < numCols; ++c) {
+        if (colWidth[c] <= 0) {
+            colWidth[c] = avgColWidth;
+        }
+    }
+
+    // Pass 3: Spanned-cell width distribution (colSpan > 1)
+    for (const auto& ac : activeCells) {
+        if (ac.colSpan > 1 && ac.colIndex >= 0 && ac.colIndex < numCols) {
+            int endCol = (std::min)(ac.colIndex + ac.colSpan, numCols);
+            int span = endCol - ac.colIndex;
+            if (span <= 0) continue;
+
+            int avail = 0;
+            for (int k = ac.colIndex; k < endCol; ++k) {
+                avail += colWidth[k];
+            }
+            avail += (span - 1) * config.cellGap;
+
+            if (ac.width > avail) {
+                int extra = (ac.width - avail + span - 1) / span;
+                for (int k = ac.colIndex; k < endCol; ++k) {
+                    colWidth[k] += extra;
+                }
+            }
+        }
+    }
+
+    // Pass 4: Column X offsets
     std::vector<int> colX(numCols, 0);
     colX[0] = 0;
     for (int c = 1; c < numCols; ++c) {
@@ -134,28 +202,26 @@ std::vector<LinuxIslandSlot> LinuxOverlay::LayoutIslands(const AppConfig& config
         if (config.customY >= 0) origin.y = config.customY;
     }
 
-    for (int r = 0; r < numRows; ++r) {
-        const auto& rDef = config.customGrid.rows[r];
-        int slotY = origin.y + r * (baseHeight + config.rowGap);
-        for (size_t c = 0; c < rDef.cells.size(); ++c) {
-            const auto& cell = rDef.cells[c];
-            if (cell.token.empty() || cell.token == ".") continue;
+    for (const auto& ac : activeCells) {
+        if (ac.colIndex < 0 || ac.colIndex >= numCols) continue;
+        int endCol = (std::min)(ac.colIndex + ac.colSpan, numCols);
+        int spanWidth = (endCol > ac.colIndex)
+            ? (colX[endCol - 1] + colWidth[endCol - 1] - colX[ac.colIndex])
+            : ac.width;
+        int w = (std::max)(ac.width, spanWidth);
+        int slotY = origin.y + ac.r * (baseHeight + config.rowGap);
 
-            int cellW = cellWidths[r][c];
-            if (cellW <= 0) continue;
+        LinuxIslandSlot slot;
+        slot.rowIndex = ac.r;
+        slot.colIndex = ac.colIndex;
+        slot.token = ac.token;
+        slot.lastText = ac.text;
+        slot.relX = origin.x + colX[ac.colIndex];
+        slot.relY = slotY;
+        slot.width = w;
+        slot.height = baseHeight;
 
-            LinuxIslandSlot slot;
-            slot.rowIndex = r;
-            slot.colIndex = static_cast<int>(c);
-            slot.token = cell.token;
-            slot.lastText = cellTexts[r][c];
-            slot.relX = origin.x + colX[c];
-            slot.relY = slotY;
-            slot.width = cellW;
-            slot.height = baseHeight;
-
-            slots.push_back(slot);
-        }
+        slots.push_back(slot);
     }
 
     return slots;
@@ -200,26 +266,127 @@ static std::string WStringToUtf8(const std::wstring& wstr) {
 static cairo_font_weight_t ResolveCairoFontWeight(const std::wstring& wweight) {
     std::string w = WStringToUtf8(wweight);
     for (auto& c : w) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (w == "regular" || w == "normal") {
+    if (w == "400" || w == "light" || w == "regular" || w == "normal") {
         return CAIRO_FONT_WEIGHT_NORMAL;
     }
-    return CAIRO_FONT_WEIGHT_BOLD;
+    if (w == "600" || w == "700" || w == "semibold" || w == "bold") {
+        return CAIRO_FONT_WEIGHT_BOLD;
+    }
+    return CAIRO_FONT_WEIGHT_NORMAL;
 }
 
 static std::string ResolveFontFaceName(const std::wstring& wface) {
-    std::string fontFaceName = "DejaVu Sans";
     if (!wface.empty()) {
         std::string utf8Face = WStringToUtf8(wface);
         std::string lowerFace = utf8Face;
         for (auto& c : lowerFace) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (lowerFace != "auto" && lowerFace != "system" && !utf8Face.empty()) {
-            fontFaceName = utf8Face;
+            return utf8Face;
         }
     }
-    return fontFaceName;
+
+    // Default Linux font selection: probe for standard sans fonts containing complete
+    // symbol coverage (arrows ↓ ↑, separators │, bullets •, degree °).
+    // Liberation Sans is standard on Fedora, RHEL, CentOS, Debian, openSUSE.
+    // DejaVu Sans is standard on Ubuntu, Debian, Arch, Mint.
+    static const char* liberationPaths[] = {
+        "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/LiberationSans-Regular.ttf"
+    };
+    for (const char* path : liberationPaths) {
+        if (access(path, R_OK) == 0) {
+            return "Liberation Sans";
+        }
+    }
+
+    static const char* dejavuPaths[] = {
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf"
+    };
+    for (const char* path : dejavuPaths) {
+        if (access(path, R_OK) == 0) {
+            return "DejaVu Sans";
+        }
+    }
+
+    return "Liberation Sans";
+}
+
+static bool CairoFontHasGlyphs(cairo_t* cr, const std::string& utf8Text) {
+    if (!cr || utf8Text.empty()) return false;
+    cairo_scaled_font_t* scaled = cairo_get_scaled_font(cr);
+    if (!scaled) return false;
+    cairo_glyph_t* glyphs = nullptr;
+    int numGlyphs = 0;
+    cairo_status_t status = cairo_scaled_font_text_to_glyphs(
+        scaled, 0.0, 0.0, utf8Text.c_str(), -1, &glyphs, &numGlyphs, nullptr, nullptr, nullptr);
+    bool ok = (status == CAIRO_STATUS_SUCCESS && numGlyphs > 0);
+    if (ok) {
+        for (int i = 0; i < numGlyphs; ++i) {
+            if (glyphs[i].index == 0) { // 0 is .notdef in FreeType/OpenType
+                ok = false;
+                break;
+            }
+        }
+    }
+    if (glyphs) {
+        cairo_glyph_free(glyphs);
+    }
+    return ok;
+}
+
+static void ResolveLinuxFontSymbols(cairo_t* cr, AppConfig& config) {
+    if (config.symbolStyle == "ascii") {
+        config.arrowDown = L"v";
+        config.arrowUp = L"^";
+        if (!config.hasUserDefinedSeparator) {
+            config.separator = L"|";
+        }
+        return;
+    }
+    if (config.symbolStyle == "unicode") {
+        config.arrowDown = L"\x2193";
+        config.arrowUp = L"\x2191";
+        if (!config.hasUserDefinedSeparator) {
+            config.separator = L"\x2502";
+        }
+        return;
+    }
+
+    if (cr) {
+        bool hasArrows = CairoFontHasGlyphs(cr, "\xE2\x86\x93") && CairoFontHasGlyphs(cr, "\xE2\x86\x91");
+        if (hasArrows) {
+            config.arrowDown = L"\x2193";
+            config.arrowUp = L"\x2191";
+        } else {
+            config.arrowDown = L"v";
+            config.arrowUp = L"^";
+            LOG_INFO("OVERLAY", "Active font lacks Unicode arrows; using ASCII fallbacks (v, ^)");
+        }
+
+        if (!config.hasUserDefinedSeparator) {
+            bool hasBoxVertical = CairoFontHasGlyphs(cr, "\xE2\x94\x82");
+            if (hasBoxVertical) {
+                config.separator = L"\x2502";
+            } else {
+                config.separator = L"|";
+                LOG_INFO("OVERLAY", "Active font lacks Unicode vertical divider; using ASCII fallback (|)");
+            }
+        }
+    }
 }
 
 #endif // BARESTATS_HAS_CAIRO
+
+#if !defined(BARESTATS_HAS_CAIRO) || defined(_WIN32)
+static std::string ResolveFontFaceName(const std::wstring& wface) {
+    (void)wface;
+    return "Liberation Sans";
+}
+#endif
 
 #if defined(BARESTATS_HAS_X11) && !defined(_WIN32)
 static int X11IgnoreErrorHandler(Display*, XErrorEvent*) {
@@ -392,6 +559,10 @@ struct LinuxOverlay::Impl {
             }
 
             if (x11Window) { XDestroyWindow(x11Display, x11Window); x11Window = 0; }
+            if (x11Colormap != 0 && x11Colormap != DefaultColormap(x11Display, DefaultScreen(x11Display))) {
+                XFreeColormap(x11Display, x11Colormap);
+                x11Colormap = 0;
+            }
             XCloseDisplay(x11Display);
             x11Display = nullptr;
         }
@@ -404,8 +575,39 @@ struct LinuxOverlay::Impl {
         const char* x11DisplayStr = std::getenv("DISPLAY");
         if (x11DisplayStr && std::strlen(x11DisplayStr) > 0) {
             x11Display = XOpenDisplay(nullptr);
-            if (x11Display) {
-                XSetErrorHandler(X11IgnoreErrorHandler);
+        }
+
+        // Auto-probe standard Xwayland displays (:0, :1, :2) when DISPLAY is unset or failed
+        if (!x11Display) {
+            const char* probeList[] = { ":0", ":1", ":2" };
+            for (const char* candidate : probeList) {
+                x11Display = XOpenDisplay(candidate);
+                if (x11Display) break;
+            }
+        }
+
+        // Also check /tmp/.X11-unix if standard candidates failed
+        if (!x11Display) {
+            std::error_code ec;
+            if (std::filesystem::exists("/tmp/.X11-unix", ec)) {
+                for (const auto& entry : std::filesystem::directory_iterator("/tmp/.X11-unix", ec)) {
+                    std::string filename = entry.path().filename().string();
+                    if (filename.rfind("X", 0) == 0 && filename.size() > 1) {
+                        std::string dispNum = ":" + filename.substr(1);
+                        x11Display = XOpenDisplay(dispNum.c_str());
+                        if (x11Display) break;
+                    }
+                }
+            }
+        }
+
+        if (x11Display) {
+            const char* actualDisplayName = DisplayString(x11Display);
+            if (actualDisplayName && std::strlen(actualDisplayName) > 0) {
+                setenv("DISPLAY", actualDisplayName, 1);
+            }
+
+            XSetErrorHandler(X11IgnoreErrorHandler);
 
                 int screen = DefaultScreen(x11Display);
                 int screenW = DisplayWidth(x11Display, screen);
@@ -537,6 +739,12 @@ struct LinuxOverlay::Impl {
                 x11Surface = cairo_xlib_surface_create(x11Display, x11Window, visual, currentWidth, currentHeight);
                 x11Cr = cairo_create(x11Surface);
 
+                std::string fontFaceName = ResolveFontFaceName(config.fontFace);
+                cairo_font_weight_t fontWeight = ResolveCairoFontWeight(config.fontWeight);
+                cairo_select_font_face(x11Cr, fontFaceName.c_str(), CAIRO_FONT_SLANT_NORMAL, fontWeight);
+                cairo_set_font_size(x11Cr, (config.fontSize > 0) ? config.fontSize : 13);
+                ResolveLinuxFontSymbols(x11Cr, config);
+
                 XMapRaised(x11Display, x11Window);
                 XFlush(x11Display);
 
@@ -544,21 +752,20 @@ struct LinuxOverlay::Impl {
                 outType = backendType;
                 return true;
             }
-        }
 #endif
 
-        // 2. Wayland Fallback Check
+        // 2. Wayland Fallback Check (native Wayland surface rendering not yet implemented; requires Xwayland)
         const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
         if (waylandDisplay && std::strlen(waylandDisplay) > 0) {
             backendType = LinuxOverlayBackendType::Wayland;
             outType = backendType;
-            return true;
+            return false;
         }
 
         // 3. Headless Fallback (CI, containers, or terminal session)
         backendType = LinuxOverlayBackendType::Headless;
         outType = backendType;
-        return true;
+        return false;
     }
 
     void SetVisible(bool visible) {
@@ -682,6 +889,13 @@ struct LinuxOverlay::Impl {
         }
 
         MonitorInfo mon = MonitorHelper::GetMonitor(config.monitorIndex);
+        int scr = DefaultScreen(x11Display);
+        int dw = DisplayWidth(x11Display, scr);
+        int dh = DisplayHeight(x11Display, scr);
+        if (dw > 0 && dh > 0) {
+            mon.rcMonitor = { 0, 0, dw, dh };
+            mon.rcWork = { 0, 0, dw, dh };
+        }
         islandSlots = LinuxOverlay::LayoutIslands(config, metrics, mon);
 
         if (islandSlots.empty()) {
@@ -771,6 +985,10 @@ struct LinuxOverlay::Impl {
             }
         }
 
+        int fontSize = (config.fontSize > 0) ? config.fontSize : 13;
+        std::string fontFaceName = ResolveFontFaceName(config.fontFace);
+        cairo_font_weight_t fontWeight = ResolveCairoFontWeight(config.fontWeight);
+
         // Anchor window for Move Mode or hide in normal mode
         if (x11Window) {
             if (isPositioningMode) {
@@ -794,7 +1012,7 @@ struct LinuxOverlay::Impl {
                 DrawRoundedRectangle(x11Cr, 1.0, 1.0, bannerW - 2.0, bannerH - 2.0, 6.0);
                 cairo_stroke(x11Cr);
 
-                cairo_select_font_face(x11Cr, "DejaVu Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+                cairo_select_font_face(x11Cr, fontFaceName.c_str(), CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
                 cairo_set_font_size(x11Cr, 11);
                 cairo_move_to(x11Cr, 12, 18);
                 cairo_show_text(x11Cr, "MOVE MODE \xE2\x80\xA2 Drag anywhere \xE2\x80\xA2 Esc / Click to Exit");
@@ -804,10 +1022,6 @@ struct LinuxOverlay::Impl {
                 XUnmapWindow(x11Display, x11Window);
             }
         }
-
-        int fontSize = (config.fontSize > 0) ? config.fontSize : 13;
-        std::string fontFaceName = ResolveFontFaceName(config.fontFace);
-        cairo_font_weight_t fontWeight = ResolveCairoFontWeight(config.fontWeight);
 
         int padX = 14;
         int padY = 6;
@@ -1155,6 +1369,12 @@ LinuxOverlay::~LinuxOverlay() {
 
 bool LinuxOverlay::Initialize() {
     bool ok = impl_->Initialize(backendType_);
+    std::string fontFace = ResolveFontFaceName(config_.fontFace);
+    int fontSize = (config_.fontSize > 0) ? config_.fontSize : 13;
+    LOG_INFO("OVERLAY", "Linux overlay initialized (" +
+        std::string(backendType_ == LinuxOverlayBackendType::X11 ? "X11/XWayland" : "Wayland") +
+        ", font: " + fontFace + ", size: " + std::to_string(fontSize) + "px)");
+
     if (config_.showTrayIcon) {
         SetupTray();
     }
@@ -1171,8 +1391,53 @@ void LinuxOverlay::SetupTray() {
     cbs.onResetPosition = [this]() { SetPreset(PositionPreset::BottomCenter); };
     cbs.onToggleVisibility = [this]() { ToggleVisibility(); };
     cbs.onReloadConfig = []() { RequestReloadConfig(); };
+    cbs.onExportSatellite = [this]() { ExportSatelliteConfiguration(); };
     cbs.onExit = []() { RequestStop(); };
-    tray_->Initialize(cbs);
+    if (!tray_->Initialize(cbs)) {
+        LOG_WARN("TRAY", "System tray requested (show_tray_icon = 1), but no AppIndicator library (libayatana-appindicator3 / libappindicator3) is installed. Overlay will run without a tray icon.");
+    }
+}
+
+void LinuxOverlay::ExportSatelliteConfiguration() {
+    std::string configPath = configPath_.empty() ? ConfigManager::GetDefaultConfigPath() : configPath_;
+    if (config_.cluster.clusterKey.empty() || config_.cluster.clusterKey.size() != 64) {
+        uint8_t key[Crypto::KEY_SIZE] = {0};
+        Crypto::GenerateKey(key);
+        config_.cluster.clusterKey = Crypto::KeyToHex(key);
+        Crypto::SecureWipe(key, sizeof(key));
+        ConfigManager::Save(configPath, config_);
+        if (onConfigReload_) onConfigReload_();
+    }
+
+    std::filesystem::path outPath = ResolveSatelliteExportPath(configPath);
+    bool ok = ConfigManager::ExportSatelliteIni(outPath.string(), config_.cluster.clusterKey);
+    if (ok) {
+        LOG_INFO("CLUSTER", "satellite.ini exported successfully to: " + outPath.string());
+        std::cout << "[BareStats] satellite.ini exported successfully to: " << outPath.string() << "\n";
+
+        std::string msg = "satellite.ini exported successfully!\n\n"
+                          "Location:\n" + outPath.string() + "\n\n"
+                          "To deploy to your remote rig:\n"
+                          "1. Copy barestats binary and satellite.ini to remote rig.\n"
+                          "2. Run 'sudo ./barestats --service-install' on the remote rig.";
+
+        SafeNotifySend("BareStats Satellite Setup", msg, "normal");
+
+        if (tray_) {
+            tray_->ShowDialog("BareStats Satellite Setup", msg, false);
+        }
+    } else {
+        LOG_ERROR("CLUSTER", "Failed to write satellite.ini to: " + outPath.string());
+        std::cerr << "[BareStats] Failed to write satellite.ini to: " << outPath.string() << "\n";
+
+        std::string errMsg = "Failed to write satellite.ini to:\n" + outPath.string() + "\n\nPlease check folder permissions.";
+
+        SafeNotifySend("BareStats Error", errMsg, "critical");
+
+        if (tray_) {
+            tray_->ShowDialog("BareStats Error", errMsg, true);
+        }
+    }
 }
 
 void LinuxOverlay::Show() {
@@ -1234,6 +1499,15 @@ void LinuxOverlay::ApplyConfig(const AppConfig& newConfig) {
     bool gridModeChanged = (config_.gridMode != newConfig.gridMode || config_.layout != newConfig.layout);
     bool trayChanged = (config_.showTrayIcon != newConfig.showTrayIcon);
     config_ = newConfig;
+#if defined(BARESTATS_HAS_CAIRO) && defined(BARESTATS_HAS_X11) && !defined(_WIN32)
+    if (impl_->x11Cr) {
+        std::string fontFaceName = ResolveFontFaceName(config_.fontFace);
+        cairo_font_weight_t fontWeight = ResolveCairoFontWeight(config_.fontWeight);
+        cairo_select_font_face(impl_->x11Cr, fontFaceName.c_str(), CAIRO_FONT_SLANT_NORMAL, fontWeight);
+        cairo_set_font_size(impl_->x11Cr, (config_.fontSize > 0) ? config_.fontSize : 13);
+        ResolveLinuxFontSymbols(impl_->x11Cr, config_);
+    }
+#endif
     if (gridModeChanged) {
         impl_->DestroyIslandWindows();
 #if defined(BARESTATS_HAS_X11) && !defined(_WIN32)
@@ -1255,12 +1529,17 @@ void LinuxOverlay::ApplyConfig(const AppConfig& newConfig) {
 
 void LinuxOverlay::UpdateMetrics(const SystemMetrics& metrics) {
     if (!isVisible_) return;
-    impl_->UpdateMetrics(metrics);
+    std::lock_guard<std::mutex> lock(pendingMetricsMutex_);
+    pendingMetrics_ = metrics;
+    hasPendingMetrics_.store(true);
 }
 
 void LinuxOverlay::TriggerLaunchAnimation(const SystemMetrics& targetMetrics) {
     if (!isVisible_) return;
-    impl_->TriggerLaunchAnimation(targetMetrics);
+    std::lock_guard<std::mutex> lock(pendingMetricsMutex_);
+    pendingMetrics_ = targetMetrics;
+    pendingLaunchAnimation_.store(true);
+    hasPendingMetrics_.store(true);
 }
 
 const SystemMetrics& LinuxOverlay::GetLastMetrics() const {
@@ -1289,7 +1568,21 @@ void LinuxOverlay::PollEvents() {
         AppConfig reloaded = ConfigManager::Load(cfgPath);
         ApplyConfig(reloaded);
         if (onConfigReload_) onConfigReload_();
-        TriggerLaunchAnimation(impl_->lastMetrics);
+        impl_->TriggerLaunchAnimation(impl_->lastMetrics);
+    }
+    if (hasPendingMetrics_.exchange(false)) {
+        SystemMetrics m;
+        bool launchAnim = false;
+        {
+            std::lock_guard<std::mutex> lock(pendingMetricsMutex_);
+            m = pendingMetrics_;
+            launchAnim = pendingLaunchAnimation_.exchange(false);
+        }
+        if (launchAnim) {
+            impl_->TriggerLaunchAnimation(m);
+        } else {
+            impl_->UpdateMetrics(m);
+        }
     }
 
 #if defined(BARESTATS_HAS_X11) && !defined(_WIN32)
@@ -1331,7 +1624,16 @@ void LinuxOverlay::PollEvents() {
             } else if (impl_->isPositioningMode) {
                 if (ev.type == ButtonPress) {
                     if (ev.xbutton.button == Button3) {
-                        TogglePositioningMode();
+                        if (tray_ && tray_->IsActive()) {
+                            if (impl_->isPointerGrabbed) {
+                                XUngrabPointer(impl_->x11Display, CurrentTime);
+                                XUngrabKeyboard(impl_->x11Display, CurrentTime);
+                                impl_->isPointerGrabbed = false;
+                            }
+                            tray_->PopupMenu();
+                        } else {
+                            TogglePositioningMode();
+                        }
                         continue;
                     }
                     if (ev.xbutton.button == Button1) {

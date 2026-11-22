@@ -20,5 +20,5 @@ makepkg -si
 After building, the package (`.pkg.tar.zst`) can be installed with:
 
 ```bash
-sudo pacman -U barestats-1.3.0-1-x86_64.pkg.tar.zst
+sudo pacman -U barestats-1.4.0-1-x86_64.pkg.tar.zst
 ```
