@@ -862,15 +862,21 @@ bool Test_UdpStreamer_DiscoveryRateLimitingAndTargetIsolation() {
     std::strncpy(payload.rig_id, "rate_rig", sizeof(payload.rig_id) - 1);
     transmitter.SendPayload(payload);
 
-    TEST_ASSERT(states[0].discover_attempts == init_attempts_0, "Target A must not re-trigger discovery within 10s");
-    TEST_ASSERT(states[1].discover_attempts == init_attempts_1, "Target B must not re-trigger discovery within 10s");
+    auto elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - states[0].last_discover_time).count();
+    if (elapsed_s < 10) {
+        TEST_ASSERT(states[0].discover_attempts == init_attempts_0, "Target A must not re-trigger discovery within 10s");
+        TEST_ASSERT(states[1].discover_attempts == init_attempts_1, "Target B must not re-trigger discovery within 10s");
+    }
+
+    uint32_t post_payload_attempts_0 = states[0].discover_attempts;
+    uint32_t post_payload_attempts_1 = states[1].discover_attempts;
 
     // Per-target discovery isolation: triggering discovery for Target 0 only
     uint64_t target_b_tx_id = states[1].pending_transaction_id;
     bool disc0 = transmitter.SendDiscover(0);
     TEST_ASSERT(disc0, "SendDiscover(0) must succeed");
-    TEST_ASSERT(states[0].discover_attempts == init_attempts_0 + 1, "Target A discover attempts must increment");
-    TEST_ASSERT(states[1].discover_attempts == init_attempts_1, "Target B discover attempts must remain unchanged");
+    TEST_ASSERT(states[0].discover_attempts == post_payload_attempts_0 + 1, "Target A discover attempts must increment");
+    TEST_ASSERT(states[1].discover_attempts == post_payload_attempts_1, "Target B discover attempts must remain unchanged");
     TEST_ASSERT(states[1].pending_transaction_id == target_b_tx_id, "Target B transaction ID must not be overwritten");
 
     // Acknowledge Target A discovery

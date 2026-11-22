@@ -371,6 +371,7 @@ bool UdpTransmitter::SendDiscoverForTarget(SatelliteTargetState& target) {
         }
     }
 
+    target.last_discover_time = std::chrono::steady_clock::now();
     return any_sent;
 }
 
