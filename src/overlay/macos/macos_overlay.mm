@@ -1,4 +1,6 @@
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 #include "macos_overlay.h"
 
 #ifdef __APPLE__
@@ -11,8 +13,43 @@
 #include <thread>
 #include <vector>
 #include <string>
+#include <filesystem>
+#include "util/crypto/crypto_box.h"
+#include "util/os_utils.h"
+#include "util/logger.h"
 
 namespace BareStats {
+
+inline std::string WStringToUtf8(const std::wstring& wstr) {
+    if (wstr.empty()) return "";
+    std::string out;
+    for (wchar_t wc : wstr) {
+        if (wc <= 0x7F) {
+            out.push_back(static_cast<char>(wc));
+        } else if (wc <= 0x7FF) {
+            out.push_back(static_cast<char>(0xC0 | ((wc >> 6) & 0x1F)));
+            out.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xE0 | ((wc >> 12) & 0x0F)));
+            out.push_back(static_cast<char>(0x80 | ((wc >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+        }
+    }
+    return out;
+}
+
+inline NSColor* ColorRefToNSColor(COLORREF color, double alpha) {
+    CGFloat r = ((color) & 0xFF) / 255.0;
+    CGFloat g = ((color >> 8) & 0xFF) / 255.0;
+    CGFloat b = ((color >> 16) & 0xFF) / 255.0;
+    return [NSColor colorWithCalibratedRed:r green:g blue:b alpha:alpha];
+}
+
+inline bool IsBoldFontWeight(const std::wstring& wweight) {
+    std::string w = WStringToUtf8(wweight);
+    for (auto& c : w) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return (w == "bold" || w == "semibold" || w == "600" || w == "700" || w == "800" || w == "900");
+}
 
 // Sub-microsecond 64-bit FNV-1a Hash Combination for Frame Dirty Check
 static inline size_t CombineHash(size_t seed, size_t value) {
@@ -43,6 +80,79 @@ bool MacosOverlay::ComputeDirtyHash(const std::vector<std::vector<FormattedSegme
     return true;
 }
 
+static bool MacOSFontHasGlyphs(CTFontRef font, const std::wstring& text) {
+    if (!font || text.empty()) return false;
+    std::vector<UniChar> chars;
+    chars.reserve(text.size());
+    for (wchar_t wc : text) {
+        chars.push_back(static_cast<UniChar>(wc));
+    }
+    std::vector<CGGlyph> glyphs(chars.size(), 0);
+    bool ok = CTFontGetGlyphsForCharacters(font, chars.data(), glyphs.data(), chars.size());
+    if (!ok) return false;
+    for (CGGlyph g : glyphs) {
+        if (g == 0) return false;
+    }
+    return true;
+}
+
+static void ResolveMacOSFontSymbols(BareStats::AppConfig& config) {
+    if (config.symbolStyle == "ascii") {
+        config.arrowDown = L"v";
+        config.arrowUp = L"^";
+        if (!config.hasUserDefinedSeparator) {
+            config.separator = L"|";
+        }
+        return;
+    }
+    if (config.symbolStyle == "unicode") {
+        config.arrowDown = L"\x2193";
+        config.arrowUp = L"\x2191";
+        if (!config.hasUserDefinedSeparator) {
+            config.separator = L"\x2502";
+        }
+        return;
+    }
+
+    int fontSize = (config.fontSize > 0) ? config.fontSize : 13;
+    bool isBoldCfg = BareStats::IsBoldFontWeight(config.fontWeight);
+    CTFontRef probeFont = NULL;
+    if (config.fontFace == L"auto" || config.fontFace.empty()) {
+        probeFont = CTFontCreateUIFontForLanguage(isBoldCfg ? kCTFontUIFontEmphasizedSystem : kCTFontUIFontSystem, fontSize, NULL);
+    } else {
+        std::string faceName = BareStats::WStringToUtf8(config.fontFace);
+        CFStringRef cfName = CFStringCreateWithCString(kCFAllocatorDefault, faceName.c_str(), kCFStringEncodingUTF8);
+        probeFont = CTFontCreateWithName(cfName, fontSize, NULL);
+        if (cfName) CFRelease(cfName);
+    }
+    if (!probeFont) {
+        probeFont = CTFontCreateUIFontForLanguage(isBoldCfg ? kCTFontUIFontEmphasizedSystem : kCTFontUIFontSystem, fontSize, NULL);
+    }
+
+    if (probeFont) {
+        bool hasArrows = MacOSFontHasGlyphs(probeFont, L"\x2193\x2191");
+        if (hasArrows) {
+            config.arrowDown = L"\x2193";
+            config.arrowUp = L"\x2191";
+        } else {
+            config.arrowDown = L"v";
+            config.arrowUp = L"^";
+            LOG_INFO("OVERLAY", "Active font lacks Unicode arrows; using ASCII fallbacks (v, ^)");
+        }
+
+        if (!config.hasUserDefinedSeparator) {
+            bool hasBoxVertical = MacOSFontHasGlyphs(probeFont, L"\x2502");
+            if (hasBoxVertical) {
+                config.separator = L"\x2502";
+            } else {
+                config.separator = L"|";
+                LOG_INFO("OVERLAY", "Active font lacks Unicode vertical divider; using ASCII fallback (|)");
+            }
+        }
+        CFRelease(probeFont);
+    }
+}
+
 std::vector<MacosIslandSlot> MacosOverlay::LayoutIslands(const AppConfig& config,
                                                         const SystemMetrics& metrics,
                                                         const MonitorInfo& monitor,
@@ -55,21 +165,32 @@ std::vector<MacosIslandSlot> MacosOverlay::LayoutIslands(const AppConfig& config
     const int baseHeight = 18 + slotPaddingY * 2;
 
     int numRows = static_cast<int>(config.customGrid.rows.size());
-    int numCols = 0;
+    int numCols = config.customGrid.numCols;
     for (const auto& rDef : config.customGrid.rows) {
-        if (static_cast<int>(rDef.cells.size()) > numCols) {
-            numCols = static_cast<int>(rDef.cells.size());
+        for (const auto& cell : rDef.cells) {
+            int right = cell.colIndex + (cell.colSpan > 1 ? cell.colSpan : 1);
+            if (right > numCols) {
+                numCols = right;
+            }
         }
     }
     if (numCols <= 0) return slots;
 
-    std::vector<std::vector<int>> cellWidths(numRows, std::vector<int>(numCols, 0));
-    std::vector<std::vector<std::wstring>> cellTexts(numRows, std::vector<std::wstring>(numCols));
+    struct ActiveCell {
+        int r = 0;
+        int ci = 0;
+        int colIndex = 0;
+        int colSpan = 1;
+        std::string token;
+        std::wstring text;
+        int width = 0;
+    };
 
+    std::vector<ActiveCell> activeCells;
     for (int r = 0; r < numRows; ++r) {
         const auto& rDef = config.customGrid.rows[r];
-        for (size_t c = 0; c < rDef.cells.size(); ++c) {
-            const auto& cell = rDef.cells[c];
+        for (size_t ci = 0; ci < rDef.cells.size(); ++ci) {
+            const auto& cell = rDef.cells[ci];
             if (cell.token.empty() || cell.token == ".") continue;
 
             auto segs = Formatter::FormatCell(cell.token, metrics, &config);
@@ -79,20 +200,74 @@ std::vector<MacosIslandSlot> MacosOverlay::LayoutIslands(const AppConfig& config
                 cellLen += static_cast<int>(s.text.size());
                 combined += s.text;
             }
-            cellWidths[r][c] = (cellLen * charWidth) + (slotPaddingX * 2);
-            cellTexts[r][c] = std::move(combined);
+            int w = (cellLen * charWidth) + (slotPaddingX * 2);
+            activeCells.push_back({ r, static_cast<int>(ci), cell.colIndex, cell.colSpan > 0 ? cell.colSpan : 1, cell.token, std::move(combined), w });
         }
     }
 
+    // Pass 1: Single-cell width resolution (colSpan == 1)
     std::vector<int> colWidth(numCols, 0);
-    for (int c = 0; c < numCols; ++c) {
-        int maxW = 0;
-        for (int r = 0; r < numRows; ++r) {
-            if (cellWidths[r][c] > maxW) maxW = cellWidths[r][c];
+    for (const auto& ac : activeCells) {
+        if (ac.colSpan == 1 && ac.colIndex >= 0 && ac.colIndex < numCols) {
+            if (ac.width > colWidth[ac.colIndex]) {
+                colWidth[ac.colIndex] = ac.width;
+            }
         }
-        colWidth[c] = (maxW > 0) ? maxW : 90;
     }
 
+    // Pass 2: Base column width resolution for empty / spacer columns
+    int sumKnown = 0;
+    int countKnown = 0;
+    for (int c = 0; c < numCols; ++c) {
+        if (colWidth[c] > 0) {
+            sumKnown += colWidth[c];
+            countKnown++;
+        }
+    }
+
+    int avgColWidth = 0;
+    if (countKnown > 0) {
+        avgColWidth = sumKnown / countKnown;
+    } else {
+        int maxSpannedPerCol = 0;
+        for (const auto& ac : activeCells) {
+            if (ac.colSpan > 0) {
+                int perCol = ac.width / ac.colSpan;
+                if (perCol > maxSpannedPerCol) maxSpannedPerCol = perCol;
+            }
+        }
+        avgColWidth = (maxSpannedPerCol > 0) ? maxSpannedPerCol : 90;
+    }
+
+    for (int c = 0; c < numCols; ++c) {
+        if (colWidth[c] <= 0) {
+            colWidth[c] = avgColWidth;
+        }
+    }
+
+    // Pass 3: Spanned-cell width distribution (colSpan > 1)
+    for (const auto& ac : activeCells) {
+        if (ac.colSpan > 1 && ac.colIndex >= 0 && ac.colIndex < numCols) {
+            int endCol = (std::min)(ac.colIndex + ac.colSpan, numCols);
+            int span = endCol - ac.colIndex;
+            if (span <= 0) continue;
+
+            int avail = 0;
+            for (int k = ac.colIndex; k < endCol; ++k) {
+                avail += colWidth[k];
+            }
+            avail += (span - 1) * config.cellGap;
+
+            if (ac.width > avail) {
+                int extra = (ac.width - avail + span - 1) / span;
+                for (int k = ac.colIndex; k < endCol; ++k) {
+                    colWidth[k] += extra;
+                }
+            }
+        }
+    }
+
+    // Pass 4: Column X offsets
     std::vector<int> colX(numCols, 0);
     colX[0] = 0;
     for (int c = 1; c < numCols; ++c) {
@@ -108,59 +283,36 @@ std::vector<MacosIslandSlot> MacosOverlay::LayoutIslands(const AppConfig& config
         if (config.customY >= 0) origin.y = config.customY;
     }
 
-    for (int r = 0; r < numRows; ++r) {
-        const auto& rDef = config.customGrid.rows[r];
-        int slotY = origin.y + r * (baseHeight + config.rowGap);
-        for (size_t c = 0; c < rDef.cells.size(); ++c) {
-            const auto& cell = rDef.cells[c];
-            if (cell.token.empty() || cell.token == ".") continue;
+    for (const auto& ac : activeCells) {
+        if (ac.colIndex < 0 || ac.colIndex >= numCols) continue;
+        int endCol = (std::min)(ac.colIndex + ac.colSpan, numCols);
+        int spanWidth = (endCol > ac.colIndex)
+            ? (colX[endCol - 1] + colWidth[endCol - 1] - colX[ac.colIndex])
+            : ac.width;
+        int w = (std::max)(ac.width, spanWidth);
+        int slotY = origin.y + ac.r * (baseHeight + config.rowGap);
 
-            int cellW = cellWidths[r][c];
-            if (cellW <= 0) continue;
+        MacosIslandSlot slot;
+        slot.rowIndex = ac.r;
+        slot.colIndex = ac.colIndex;
+        slot.token = ac.token;
+        slot.lastText = ac.text;
+        slot.relX = origin.x + colX[ac.colIndex];
+        slot.relY = slotY;
+        slot.width = w;
+        slot.height = baseHeight;
 
-            MacosIslandSlot slot;
-            slot.rowIndex = r;
-            slot.colIndex = static_cast<int>(c);
-            slot.token = cell.token;
-            slot.lastText = cellTexts[r][c];
-            slot.relX = origin.x + colX[c];
-            slot.relY = slotY;
-            slot.width = cellW;
-            slot.height = baseHeight;
-
-            slots.push_back(slot);
-        }
+        slots.push_back(slot);
     }
 
     return slots;
 }
 
-static std::string WStringToUtf8(const std::wstring& wstr) {
-    if (wstr.empty()) return "";
-    std::string out;
-    for (wchar_t wc : wstr) {
-        if (wc <= 0x7F) {
-            out.push_back(static_cast<char>(wc));
-        } else if (wc <= 0x7FF) {
-            out.push_back(static_cast<char>(0xC0 | ((wc >> 6) & 0x1F)));
-            out.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
-        } else {
-            out.push_back(static_cast<char>(0xE0 | ((wc >> 12) & 0x0F)));
-            out.push_back(static_cast<char>(0x80 | ((wc >> 6) & 0x3F)));
-            out.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
-        }
-    }
-    return out;
-}
-
-static inline NSColor* ColorRefToNSColor(COLORREF color, double alpha) {
-    CGFloat r = ((color) & 0xFF) / 255.0;
-    CGFloat g = ((color >> 8) & 0xFF) / 255.0;
-    CGFloat b = ((color >> 16) & 0xFF) / 255.0;
-    return [NSColor colorWithCalibratedRed:r green:g blue:b alpha:alpha];
-}
-
 } // namespace BareStats
+
+using BareStats::IsBoldFontWeight;
+using BareStats::WStringToUtf8;
+using BareStats::ColorRefToNSColor;
 
 // ==============================================================================
 // Cocoa View & Window Implementation
@@ -202,7 +354,26 @@ static inline NSColor* ColorRefToNSColor(COLORREF color, double alpha) {
     int totalH = static_cast<int>(_rows.size()) * rowHeight + padY * 2;
     if (_isPositioningMode) totalH += 26; // Space for move mode banner
 
-    CTFontRef font = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, fontSize, NULL);
+    bool isBoldCfg = BareStats::IsBoldFontWeight(_config->fontWeight);
+    CTFontRef font = NULL;
+    if (_config->fontFace == L"auto" || _config->fontFace.empty()) {
+        font = CTFontCreateUIFontForLanguage(isBoldCfg ? kCTFontUIFontEmphasizedSystem : kCTFontUIFontSystem, fontSize, NULL);
+    } else {
+        std::string faceName = BareStats::WStringToUtf8(_config->fontFace);
+        CFStringRef cfName = CFStringCreateWithCString(kCFAllocatorDefault, faceName.c_str(), kCFStringEncodingUTF8);
+        font = CTFontCreateWithName(cfName, fontSize, NULL);
+        if (font && isBoldCfg) {
+            CTFontRef boldCopy = CTFontCreateCopyWithSymbolicTraits(font, fontSize, NULL, kCTFontBoldTrait, kCTFontBoldTrait);
+            if (boldCopy) {
+                CFRelease(font);
+                font = boldCopy;
+            }
+        }
+        if (cfName) CFRelease(cfName);
+    }
+    if (!font) {
+        font = CTFontCreateUIFontForLanguage(isBoldCfg ? kCTFontUIFontEmphasizedSystem : kCTFontUIFontSystem, fontSize, NULL);
+    }
     CGFloat maxRowW = 0.0;
 
     for (const auto& row : _rows) {
@@ -270,6 +441,7 @@ static inline NSColor* ColorRefToNSColor(COLORREF color, double alpha) {
     CGFloat startY = _isPositioningMode ? 32.0 : 6.0;
     CGFloat rowHeight = fontSize + 8.0;
 
+    bool isBoldCfg = BareStats::IsBoldFontWeight(_config->fontWeight);
     CTFontRef baseFont = NULL;
     CTFontRef boldFont = NULL;
 
@@ -280,7 +452,12 @@ static inline NSColor* ColorRefToNSColor(COLORREF color, double alpha) {
         std::string faceName = BareStats::WStringToUtf8(_config->fontFace);
         CFStringRef cfName = CFStringCreateWithCString(kCFAllocatorDefault, faceName.c_str(), kCFStringEncodingUTF8);
         baseFont = CTFontCreateWithName(cfName, fontSize, NULL);
-        boldFont = CTFontCreateWithName(cfName, fontSize, NULL);
+        if (baseFont) {
+            boldFont = CTFontCreateCopyWithSymbolicTraits(baseFont, fontSize, NULL, kCTFontBoldTrait, kCTFontBoldTrait);
+        }
+        if (!boldFont) {
+            boldFont = CTFontCreateWithName(cfName, fontSize, NULL);
+        }
         if (cfName) CFRelease(cfName);
     }
 
@@ -311,7 +488,7 @@ static inline NSColor* ColorRefToNSColor(COLORREF color, double alpha) {
                 segColor = BareStats::ColorRefToNSColor(_config->textColor, alpha);
             }
 
-            CTFontRef useFont = (seg.isBold || _config->fontWeight == L"bold") ? boldFont : baseFont;
+            CTFontRef useFont = (seg.isBold || isBoldCfg) ? boldFont : baseFont;
 
             NSMutableDictionary* attrs = [NSMutableDictionary dictionaryWithObjectsAndKeys:
                 (__bridge id)useFont, (id)kCTFontAttributeName,
@@ -391,6 +568,7 @@ static inline NSColor* ColorRefToNSColor(COLORREF color, double alpha) {
 - (void)onSelectPreset:(id)sender;
 - (void)onToggleVisibility:(id)sender;
 - (void)onReloadConfig:(id)sender;
+- (void)onExportSatellite:(id)sender;
 - (void)onQuit:(id)sender;
 @end
 
@@ -409,6 +587,9 @@ static inline NSColor* ColorRefToNSColor(COLORREF color, double alpha) {
 }
 - (void)onReloadConfig:(id)sender {
     BareStats::MacosOverlay::RequestReloadConfig();
+}
+- (void)onExportSatellite:(id)sender {
+    if (_overlayOwner) _overlayOwner->ExportSatelliteConfiguration();
 }
 - (void)onQuit:(id)sender {
     BareStats::MacosOverlay::RequestStop();
@@ -430,6 +611,8 @@ struct MacosOverlay::Impl {
     BareStatsOverlayView* overlayView = nil;
     NSStatusItem* statusItem = nil;
     BareStatsMenuHandler* menuHandler = nil;
+    bool isVisible = true;
+    bool isPositioningMode = false;
 
     std::vector<NSPanel*> islandPanels;
     std::vector<BareStatsOverlayView*> islandViews;
@@ -445,12 +628,12 @@ struct MacosOverlay::Impl {
 
     id globalEventMonitor = nil;
     id localEventMonitor = nil;
-    bool isPositioningMode = false;
 
     Impl(AppConfig& cfg, const std::string& path)
         : config(cfg), configPath(path) {}
 
     ~Impl() {
+        RemoveStatusItem();
         if (animTimer) {
             [animTimer invalidate];
             animTimer = nil;
@@ -470,6 +653,14 @@ struct MacosOverlay::Impl {
         }
     }
 
+    void RemoveStatusItem() {
+        if (statusItem) {
+            [[NSStatusBar systemStatusBar] removeStatusItem:statusItem];
+            statusItem = nil;
+            menuHandler = nil;
+        }
+    }
+
     void DestroyIslands() {
         for (NSPanel* p : islandPanels) {
             [p close];
@@ -479,25 +670,41 @@ struct MacosOverlay::Impl {
         islandSlots.clear();
     }
 
+    NSScreen* GetTargetScreen() {
+        NSArray<NSScreen*>* screens = [NSScreen screens];
+        int monIdx = (config.monitorIndex >= 0 && config.monitorIndex < static_cast<int>(screens.count))
+            ? config.monitorIndex : 0;
+        return (screens.count > 0) ? screens[monIdx] : [NSScreen mainScreen];
+    }
+
     NSRect ConvertBareStatsToCocoa(int x, int y, int w, int h) {
-        NSScreen* screen = [NSScreen mainScreen];
+        NSScreen* screen = GetTargetScreen();
         CGFloat screenH = screen ? screen.frame.size.height : 1080.0;
+        CGFloat screenX = screen ? screen.frame.origin.x : 0.0;
         CGFloat screenY = screen ? screen.frame.origin.y : 0.0;
-        return NSMakeRect(x, screenY + screenH - (y + h), w, h);
+        return NSMakeRect(screenX + x, screenY + screenH - (y + h), w, h);
     }
 
     Point ConvertCocoaToBareStats(NSRect cocoaRect) {
-        NSScreen* screen = [NSScreen mainScreen];
+        NSScreen* screen = GetTargetScreen();
         CGFloat screenH = screen ? screen.frame.size.height : 1080.0;
+        CGFloat screenX = screen ? screen.frame.origin.x : 0.0;
         CGFloat screenY = screen ? screen.frame.origin.y : 0.0;
         Point pt;
-        pt.x = static_cast<int>(cocoaRect.origin.x);
+        pt.x = static_cast<int>(cocoaRect.origin.x - screenX);
         pt.y = static_cast<int>(screenY + screenH - (cocoaRect.origin.y + cocoaRect.size.height));
         return pt;
     }
 
     void RecalculateWindowPosition(int contentWidth, int contentHeight) {
         if (!panel) return;
+
+        if (isPositioningMode) {
+            // While dragging/positioning, preserve user's dragged origin and only resize bounds if needed
+            NSRect cur = [panel frame];
+            [panel setFrame:NSMakeRect(cur.origin.x, cur.origin.y, contentWidth, contentHeight) display:YES animate:NO];
+            return;
+        }
 
         NSArray<NSScreen*>* screens = [NSScreen screens];
         int monIdx = (config.monitorIndex >= 0 && config.monitorIndex < static_cast<int>(screens.count))
@@ -559,7 +766,7 @@ struct MacosOverlay::Impl {
 
         NSRect cocoaFrame = NSMakeRect(posX, posY, contentWidth, contentHeight);
         [panel setFrame:cocoaFrame display:YES animate:NO];
-        if (panel) {
+        if (panel && isVisible) {
             [panel orderFrontRegardless];
         }
     }
@@ -655,7 +862,10 @@ struct MacosOverlay::Impl {
 
     void SetupStatusItem(MacosOverlay* overlayOwner) {
         statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSSquareStatusItemLength];
-        if (!statusItem) return;
+        if (!statusItem) {
+            LOG_WARN("TRAY", "Failed to allocate macOS menu bar NSStatusItem.");
+            return;
+        }
 
         menuHandler = [[BareStatsMenuHandler alloc] init];
         menuHandler.overlayOwner = overlayOwner;
@@ -760,6 +970,13 @@ struct MacosOverlay::Impl {
         [reloadItem setTarget:menuHandler];
         [menu addItem:reloadItem];
 
+        // Export satellite.ini
+        NSMenuItem* exportItem = [[NSMenuItem alloc] initWithTitle:@"Export satellite.ini (for Remote Rig)..."
+                                                            action:@selector(onExportSatellite:)
+                                                     keyEquivalent:@""];
+        [exportItem setTarget:menuHandler];
+        [menu addItem:exportItem];
+
         [menu addItem:[NSMenuItem separatorItem]];
 
         // Quit
@@ -782,10 +999,14 @@ MacosOverlay::~MacosOverlay() {
     if (g_activeOverlay == this) {
         g_activeOverlay = nullptr;
     }
+    if (impl_) {
+        impl_->RemoveStatusItem();
+    }
 }
 
 bool MacosOverlay::Initialize() {
     @autoreleasepool {
+        ResolveMacOSFontSymbols(config_);
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
@@ -843,7 +1064,9 @@ bool MacosOverlay::Initialize() {
         };
 
         [impl_->panel setContentView:impl_->overlayView];
-        impl_->SetupStatusItem(this);
+        if (config_.showTrayIcon) {
+            impl_->SetupStatusItem(this);
+        }
     }
     return true;
 }
@@ -856,6 +1079,7 @@ void MacosOverlay::Show() {
         return;
     }
     isVisible_ = true;
+    impl_->isVisible = true;
     if (impl_->panel) {
         [impl_->panel orderFrontRegardless];
     }
@@ -869,6 +1093,7 @@ void MacosOverlay::Hide() {
         return;
     }
     isVisible_ = false;
+    impl_->isVisible = false;
     if (impl_->panel) {
         [impl_->panel orderOut:nil];
     }
@@ -895,6 +1120,11 @@ void MacosOverlay::SetPositioningMode(bool enable) {
         [impl_->panel setIgnoresMouseEvents:NO];
         [impl_->panel makeKeyAndOrderFront:nil];
 
+        if (impl_->globalEventMonitor) {
+            [NSEvent removeMonitor:impl_->globalEventMonitor];
+            impl_->globalEventMonitor = nil;
+        }
+
         // Global monitor for clicks outside overlay to exit move mode
 #if __has_feature(objc_arc)
         __weak NSPanel* weakPanel = impl_->panel;
@@ -916,6 +1146,12 @@ void MacosOverlay::SetPositioningMode(bool enable) {
         if (impl_->globalEventMonitor) {
             [NSEvent removeMonitor:impl_->globalEventMonitor];
             impl_->globalEventMonitor = nil;
+        }
+        if (impl_->panel) {
+            Point pt = impl_->ConvertCocoaToBareStats([impl_->panel frame]);
+            config_.customX = pt.x;
+            config_.customY = pt.y;
+            config_.preset = PositionPreset::Custom;
         }
         if (!configPath_.empty()) {
             ConfigManager::Save(configPath_, config_);
@@ -974,6 +1210,12 @@ void MacosOverlay::ApplyConfig(const AppConfig& newConfig) {
         return;
     }
     config_ = newConfig;
+    ResolveMacOSFontSymbols(config_);
+    if (config_.showTrayIcon && !impl_->statusItem) {
+        impl_->SetupStatusItem(this);
+    } else if (!config_.showTrayIcon && impl_->statusItem) {
+        impl_->RemoveStatusItem();
+    }
     if (impl_->overlayView) {
         impl_->overlayView.config = &config_;
     }
@@ -1029,6 +1271,10 @@ void MacosOverlay::UpdateMetrics(const SystemMetrics& metrics) {
         return;
     }
     impl_->lastMetrics = metrics;
+
+    if (!isVisible_) {
+        return;
+    }
 
     if (config_.layout == OverlayLayout::CustomGrid && config_.gridMode == GridMode::Islands) {
         impl_->PaintIslands(metrics);
@@ -1091,24 +1337,150 @@ void MacosOverlay::Run() {
 
 void MacosOverlay::Stop() {
     isRunning_.store(false);
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            this->Stop();
+        });
+        return;
+    }
     [NSApp stop:nil];
+    NSEvent* ev = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                     location:NSMakePoint(0, 0)
+                                modifierFlags:0
+                                    timestamp:0
+                                 windowNumber:0
+                                      context:nil
+                                      subtype:0
+                                        data1:0
+                                        data2:0];
+    [NSApp postEvent:ev atStart:YES];
 }
 
 void MacosOverlay::RequestStop() {
-    if (g_activeOverlay) g_activeOverlay->Stop();
+    if (g_activeOverlay) {
+        g_activeOverlay->Stop();
+    }
 }
 
 void MacosOverlay::RequestToggleVisibility() {
-    if (g_activeOverlay) g_activeOverlay->ToggleVisibility();
+    if (g_activeOverlay) {
+        if (![NSThread isMainThread]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (g_activeOverlay) g_activeOverlay->ToggleVisibility();
+            });
+        } else {
+            g_activeOverlay->ToggleVisibility();
+        }
+    }
 }
 
 void MacosOverlay::RequestTogglePositioningMode() {
-    if (g_activeOverlay) g_activeOverlay->TogglePositioningMode();
+    if (g_activeOverlay) {
+        if (![NSThread isMainThread]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (g_activeOverlay) g_activeOverlay->TogglePositioningMode();
+            });
+        } else {
+            g_activeOverlay->TogglePositioningMode();
+        }
+    }
 }
 
 void MacosOverlay::RequestReloadConfig() {
-    if (g_activeOverlay && g_activeOverlay->onConfigReload_) {
-        g_activeOverlay->onConfigReload_();
+    if (g_activeOverlay) {
+        if (![NSThread isMainThread]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (g_activeOverlay && g_activeOverlay->onConfigReload_) {
+                    g_activeOverlay->onConfigReload_();
+                }
+            });
+        } else {
+            if (g_activeOverlay->onConfigReload_) {
+                g_activeOverlay->onConfigReload_();
+            }
+        }
+    }
+}
+
+void MacosOverlay::ExportSatelliteConfiguration() {
+    std::string configPath = configPath_.empty() ? ConfigManager::GetDefaultConfigPath() : configPath_;
+    if (config_.cluster.clusterKey.empty() || config_.cluster.clusterKey.size() != 64) {
+        uint8_t key[Crypto::KEY_SIZE] = {0};
+        Crypto::GenerateKey(key);
+        config_.cluster.clusterKey = Crypto::KeyToHex(key);
+        Crypto::SecureWipe(key, sizeof(key));
+        ConfigManager::Save(configPath, config_);
+        if (onConfigReload_) onConfigReload_();
+    }
+
+    std::filesystem::path outPath = ResolveSatelliteExportPath(configPath);
+    bool ok = ConfigManager::ExportSatelliteIni(outPath.string(), config_.cluster.clusterKey);
+    if (ok) {
+        LOG_INFO("CLUSTER", "satellite.ini exported successfully to: " + outPath.string());
+        std::cout << "[BareStats] satellite.ini exported successfully to: " << outPath.string() << "\n";
+
+        std::string pathStr = outPath.string();
+        NSString* nsLocation = [NSString stringWithUTF8String:pathStr.c_str()];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSAlert* alert = [[NSAlert alloc] init];
+            alert.messageText = @"BareStats Satellite Setup";
+            alert.informativeText = @"satellite.ini exported successfully!\n\nTo deploy to your remote rig:\n1. Copy BareStats and satellite.ini to remote rig.\n2. Run 'sudo ./barestats --service-install' on remote rig.";
+            alert.alertStyle = NSAlertStyleInformational;
+
+            // Selectable path text field so user can easily copy or inspect the path
+            NSTextField* pathField = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 420, 24)];
+            pathField.stringValue = nsLocation;
+            pathField.editable = NO;
+            pathField.selectable = YES;
+            pathField.bezeled = YES;
+            pathField.drawsBackground = YES;
+            alert.accessoryView = pathField;
+
+            [alert addButtonWithTitle:@"OK"];
+            [alert addButtonWithTitle:@"Reveal in Finder"];
+            [alert addButtonWithTitle:@"Copy Path"];
+
+            NSModalResponse response = [alert runModal];
+            if (response == NSAlertSecondButtonReturn) {
+                // Reveal in Finder
+                [[NSWorkspace sharedWorkspace] selectFile:nsLocation inFileViewerRootedAtPath:@""];
+            } else if (response == NSAlertThirdButtonReturn) {
+                // Copy Path to clipboard
+                NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
+                [pasteboard clearContents];
+                [pasteboard setString:nsLocation forType:NSPasteboardTypeString];
+            }
+        });
+    } else {
+        LOG_ERROR("CLUSTER", "Failed to write satellite.ini to: " + outPath.string());
+        std::cerr << "[BareStats] Failed to write satellite.ini to: " << outPath.string() << "\n";
+
+        std::string pathStr = outPath.string();
+        NSString* nsLocation = [NSString stringWithUTF8String:pathStr.c_str()];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSAlert* alert = [[NSAlert alloc] init];
+            alert.messageText = @"BareStats Error";
+            alert.informativeText = @"Failed to write satellite.ini. Please check folder permissions.";
+            alert.alertStyle = NSAlertStyleCritical;
+
+            NSTextField* pathField = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 420, 24)];
+            pathField.stringValue = nsLocation;
+            pathField.editable = NO;
+            pathField.selectable = YES;
+            pathField.bezeled = YES;
+            pathField.drawsBackground = YES;
+            alert.accessoryView = pathField;
+
+            [alert addButtonWithTitle:@"OK"];
+            [alert addButtonWithTitle:@"Copy Path"];
+
+            NSModalResponse response = [alert runModal];
+            if (response == NSAlertSecondButtonReturn) {
+                NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
+                [pasteboard clearContents];
+                [pasteboard setString:nsLocation forType:NSPasteboardTypeString];
+            }
+        });
     }
 }
 

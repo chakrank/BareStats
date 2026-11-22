@@ -13,7 +13,7 @@ namespace BareStats {
 
 class OverlayWindow {
 public:
-    OverlayWindow(AppConfig& config);
+    OverlayWindow(AppConfig& config, std::string configPath = "");
     ~OverlayWindow();
 
     bool Initialize(HINSTANCE hInstance);
@@ -29,6 +29,7 @@ public:
 
     void OnMoved();
     void ResetToPreset(PositionPreset preset = PositionPreset::BottomCenter);
+    void CyclePositionPreset();
     void TriggerLaunchAnimation(const SystemMetrics& targetMetrics);
 
     void SetDisplayStateCallback(std::function<void(bool /*screenOn*/)> cb) { onDisplayStateChanged_ = std::move(cb); }
@@ -80,8 +81,10 @@ private:
     void SetupTrayIcon();
     void RemoveTrayIcon();
     void ShowTrayContextMenu();
+    void ExportSatelliteConfiguration();
 
     AppConfig& config_;
+    std::string configPath_;
     HWND hwnd_ = nullptr;
     HINSTANCE hInstance_ = nullptr;
     ULONG_PTR gdiplusToken_ = 0;
@@ -116,6 +119,7 @@ private:
     static const UINT_PTR HOTKEY_CTRL_ALT_P   = 1003;
     static const UINT_PTR HOTKEY_CTRL_SHIFT_H = 1004;
     static const UINT_PTR HOTKEY_CTRL_ALT_H   = 1005;
+    static const UINT_PTR HOTKEY_ESC_MOVE     = 1006;
     static const UINT_PTR TIMER_ANIM_ID       = 2005;
 
     static const UINT WM_TRAYICON             = WM_USER + 100;
@@ -125,6 +129,13 @@ private:
     static const UINT ID_TRAY_AUTOSTART       = 2006;
     static const UINT ID_TRAY_TOGGLE_VISIBILITY = 2007;
     static const UINT ID_TRAY_RELOAD_CONFIG   = 2008;
+    static const UINT ID_TRAY_EXPORT_SATELLITE = 2009;
+    static const UINT ID_TRAY_PRESET_BOTTOM_CENTER = 2010;
+    static const UINT ID_TRAY_PRESET_BOTTOM_RIGHT  = 2011;
+    static const UINT ID_TRAY_PRESET_TOP_RIGHT     = 2012;
+    static const UINT ID_TRAY_PRESET_TOP_CENTER    = 2013;
+    static const UINT ID_TRAY_PRESET_TOP_LEFT      = 2014;
+    static const UINT ID_TRAY_PRESET_BOTTOM_LEFT   = 2015;
 };
 
 } // namespace BareStats

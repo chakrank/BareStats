@@ -1,6 +1,7 @@
 #include "config.h"
 #include "ini_parser.h"
 #include "../metrics/gpu_collector.h"
+#include "../util/crypto/crypto_box.h"
 #include <sstream>
 #include <iomanip>
 #include <vector>
@@ -19,13 +20,18 @@
 #endif
 #include <windows.h>
 #include <shlobj.h>
+#include <sddl.h>
+#include <aclapi.h>
+#pragma comment(lib, "advapi32.lib")
 #elif defined(__APPLE__)
 #include <unistd.h>
 #include <cstdlib>
 #include <mach-o/dyld.h>
+#include <sys/stat.h>
 #else
 #include <unistd.h>
 #include <cstdlib>
+#include <sys/stat.h>
 #endif
 
 namespace BareStats {
@@ -131,77 +137,123 @@ static std::string JoinMetricOrder(const std::vector<std::string>& order) {
     return oss.str();
 }
 
+static void HardenConfigFilePermissions(const std::string& path) {
+#if defined(_WIN32)
+    std::wstring widePath = Utf8ToWide(path);
+    PSECURITY_DESCRIPTOR pSD = NULL;
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:P(A;;GA;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)",
+            SDDL_REVISION_1,
+            &pSD,
+            NULL)) {
+        SetFileSecurityW(widePath.c_str(), DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, pSD);
+        LocalFree(pSD);
+    }
+#else
+    chmod(path.c_str(), S_IRUSR | S_IWUSR);
+#endif
+}
+
 bool ConfigManager::CreateDefaultConfigFile(const std::string& iniPath, const AppConfig& config) {
     std::ostringstream oss;
-    oss << "# BareStats Configuration\n\n"
+    oss << "# ==============================================================================\n"
+        << "# BareStats - Configuration Reference\n"
+        << "# ==============================================================================\n"
+        << "# Configuration search paths:\n"
+        << "#   Windows:\n"
+        << "#     1. Portable Mode: <exe_directory>\\config.ini\n"
+        << "#     2. Installed Mode: %LOCALAPPDATA%\\BareStats\\config.ini\n"
+        << "#   macOS:\n"
+        << "#     1. Portable Mode: <app_bundle>/Contents/MacOS/config.ini (or next to binary)\n"
+        << "#     2. Standard Mode: ~/Library/Application Support/BareStats/config.ini\n"
+        << "#   Linux:\n"
+        << "#     1. Current Working Directory: ./config.ini\n"
+        << "#     2. Portable Mode: <exe_directory>/config.ini\n"
+        << "#     3. Standard Mode: ~/.config/barestats/config.ini (or $XDG_CONFIG_HOME/barestats/config.ini)\n"
+        << "# ==============================================================================\n\n"
         << "[BareStats]\n"
-        << "# Configuration schema version. Used for automated zero-overhead in-place migrations.\n"
+        << "# Configuration schema version. Used for automated near-zero-overhead in-place migrations.\n"
         << "schema_version = " << CURRENT_CONFIG_SCHEMA_VERSION << "\n\n"
+        << "[General]\n"
+        << "# Run mode: 0 = Desktop GUI Overlay (default), 1 = Silent Headless Daemon (Windows, macOS, Linux)\n"
+        << "headless = " << (config.headless ? "1" : "0") << "\n\n"
+        << "# System tray / menu bar icon (1 = enabled, 0 = disabled)\n"
+        << "#   Windows: System Tray Notification Area\n"
+        << "#   macOS:   Top Menu Bar (NSStatusItem)\n"
+        << "#   Linux:   AppIndicator / StatusNotifierItem top panel indicator\n"
+        << "show_tray_icon = " << (config.showTrayIcon ? "1" : "0") << "\n\n"
         << "[Position]\n"
-        << "# Selected monitor index (0 is primary)\n"
+        << "# Target monitor index: 0 = primary display, 1 = secondary (Windows, macOS, Linux)\n"
         << "monitor_index = " << config.monitorIndex << "\n\n"
         << "# Preset positions:\n"
-        << "# top-left, top-center, top-right\n"
-        << "# center-left, center, center-right\n"
-        << "# bottom-left, bottom-center, bottom-right\n"
-        << "# custom\n"
+        << "#   top-left, top-center, top-right\n"
+        << "#   center-left, center, center-right\n"
+        << "#   bottom-left, bottom-center, bottom-right\n"
+        << "#   custom\n"
         << "preset = " << MonitorHelper::PresetToString(config.preset) << "\n\n"
-        << "# Custom coordinates (used when preset = custom or after Ctrl+Shift+M reposition)\n"
+        << "# Custom coordinates in pixels (active when preset = custom)\n"
         << "custom_x = " << config.customX << "\n"
-        << "custom_y = " << config.customY << "\n"
-        << "# Monitor-relative coordinates for multi-monitor / resolution stability\n"
+        << "custom_y = " << config.customY << "\n\n"
+        << "# Monitor-relative normalized coordinates (persisted automatically on drag-to-reposition)\n"
         << "custom_rel_x = " << config.customRelX << "\n"
         << "custom_rel_y = " << config.customRelY << "\n\n"
-        << "# Edge margin in pixels\n"
+        << "# Edge margin in pixels from display boundaries\n"
         << "margin = " << config.margin << "\n\n"
-        << "# Layout geometry:\n"
-        << "#   horizontal (default) = Single-line status ribbon\n"
-        << "#   grid                 = Compact multi-row widget (auto-wrapped)\n"
-        << "#   custom_grid          = User-defined mathematical matrix grid\n"
-        << "layout = " << (config.layout == OverlayLayout::CustomGrid ? "custom_grid" : (config.layout == OverlayLayout::Grid ? "grid" : "horizontal")) << "\n\n"
-        << "# Grid engine mode: unified (default single compact window) or islands (distributed micro-HWNDs for large gaps & cross-monitor placement)\n"
+        << "[Layout]\n"
+        << "# Layout presentation mode: (Windows, macOS, Linux)\n"
+        << "#   horizontal  = Single-line status ribbon driven by 'order' sequence below\n"
+        << "#   grid        = Compact multi-row widget (Row 0 follows non-GPU 'order', subsequent rows wrap GPUs)\n"
+        << "#   custom_grid = 2D matrix layout defined explicitly via grid_row_* below\n"
+        << "mode = " << (config.layout == OverlayLayout::CustomGrid ? "custom_grid" : (config.layout == OverlayLayout::Grid ? "grid" : "horizontal")) << "\n\n"
+        << "# Metric display sequence (used for 'horizontal' ribbon and Row 0 of 'grid'):\n"
+        << "# Tokens: CPU, GPU, RAM, NET, LLM, or remote cluster tokens (e.g. rig1:cpu, rig1:gpu, rig1:llm)\n"
+        << "order = " << JoinMetricOrder(config.metricOrder) << "\n\n"
+        << "# Maximum GPUs rendered per row when layout is grid or multi-GPU row wrapping is active (default: 2)\n"
+        << "max_gpus_per_row = " << config.maxGpusPerRow << "\n\n"
+        << "# Custom Matrix Grid options (active when mode = custom_grid):\n"
+        << "# grid_mode:\n"
+        << "#   unified (default) = Single compact layered window (Windows, macOS, Linux)\n"
+        << "#   islands           = Distributed micro-windows [Windows only: native per-monitor DPI & click-through]\n"
         << "grid_mode = " << (config.gridMode == GridMode::Islands ? "islands" : "unified") << "\n\n"
-        << "# Column gap and row gap in pixels for CustomGrid (default: cell_gap = 16, row_gap = 4)\n"
+        << "# Column gap and row gap in pixels for CustomGrid\n"
         << "cell_gap = " << config.cellGap << "\n"
         << "row_gap = " << config.rowGap << "\n\n"
-        << "# Maximum GPUs per row when layout is grid or multi-GPU row wrapping is active (default: 2)\n"
-        << "max_gpus_per_row = " << config.maxGpusPerRow << "\n\n"
-        << "# Custom Matrix Grid rows (used when layout = custom_grid):\n"
-        << "# Use '.' or 'null' for empty slots. Repeat tokens on a row to merge columns (colspan).\n"
-        << "# Example:\n"
-        << "#   grid_row_1 = cpu  | .    | .    | ram\n"
-        << "#   grid_row_2 = .    | .    | gpu0 | gpu0\n"
-        << "#   grid_row_3 = gpu1 | gpu1 | gpu1 | gpu1\n"
-        << "#   grid_row_4 = .    | net  | net  | net\n\n"
+        << "# Custom Matrix Grid rows (used when mode = custom_grid):\n"
+        << "# Use '.' or 'null' for empty slots. Repeat adjacent tokens on a row to merge columns (colspan).\n"
+        << "# Available tokens: cpu, ram, net, gpu (or gpu0, gpu1...)\n"
+        << "# Sub-metrics: cpu_util, cpu_temp, cpu_power, cpu_fan, ram_used, ram_pct,\n"
+        << "#              gpu0_util, gpu0_vram, gpu0_temp, gpu0_power, gpu0_fan, net_rx, net_tx\n"
+        << "# Examples:\n"
+        << "#   grid_row_1 = cpu | ram | net\n"
+        << "#   grid_row_2 = gpu\n\n"
         << "[Appearance]\n"
-        << "# Font face family (auto inherits Windows System UI font like Segoe UI)\n"
+        << "# Font face: 'auto' dynamically resolves to Segoe UI (Windows), San Francisco (macOS), or system sans-serif (Linux)\n"
         << "font_name = auto\n"
-        << "# Font weight: semibold (default, matches Windows Taskbar & NVIDIA overlay), regular, bold\n"
+        << "# Font weight: semibold (default), regular, bold\n"
         << "font_weight = " << (config.fontWeight == L"bold" ? "bold" : (config.fontWeight == L"regular" ? "regular" : "semibold")) << "\n"
-        << "# Font size in pixels (13 recommended; 0 = auto-detect from Windows system metrics)\n"
+        << "# Font size in pixels at standard 96 DPI / 1x scale (Per-Monitor V2 and Retina scale automatically)\n"
         << "font_size = " << config.fontSize << "\n"
-        << "# Data & units text color in hex (#RRGGBB) - bright crisp white\n"
+        << "# Text color for numeric values and units in hex (#RRGGBB)\n"
         << "text_color = " << ColorToHex(config.textColor) << "\n"
-        << "# Category label text color (CPU, GPU, RAM) - soft muted silver\n"
+        << "# Label color for subsystem titles (CPU, GPU, RAM) in hex (#RRGGBB)\n"
         << "label_color = " << ColorToHex(config.labelColor) << "\n"
-        << "# Divider separator color - quiet subtle gray\n"
+        << "# Category divider separator color (#RRGGBB)\n"
         << "separator_color = " << ColorToHex(config.separatorColor) << "\n"
         << "# Threshold alert colors\n"
         << "color_high = " << ColorToHex(config.colorHigh) << "\n"
         << "color_critical = " << ColorToHex(config.colorCritical) << "\n"
-        << "# Dynamic color alerts on critical thresholds (1 = enabled, 0 = disabled)\n"
+        << "# Dynamic color alerts on high/critical thresholds (1 = enabled, 0 = disabled)\n"
         << "enable_dynamic_colors = " << (config.enableDynamicColors ? "1" : "0") << "\n"
         << "# Text drop shadow for legibility over light backgrounds\n"
         << "drop_shadow = " << (config.dropShadow ? "1" : "0") << "\n"
-        << "# Divider separator glyph (default: box drawings light vertical │)\n"
+        << "# Symbol style for telemetry divider and network rate arrows (auto, ascii, unicode)\n"
+        << "symbol_style = " << config.symbolStyle << "\n"
+        << "# Divider separator glyph (default: │ box drawings light vertical; empty/none = no divider)\n"
         << "separator = " << WideToUtf8(config.separator) << "\n"
-        << "# Global overlay opacity percentage (10 to 100, default: 100)\n"
+        << "# Global overlay opacity percentage (10 to 100, default: 100) (Windows, macOS, Linux)\n"
         << "opacity = " << config.opacity << "\n\n"
-        << "# Show icon in Linux system tray / top panel (1 = enabled, 0 = disabled)\n"
-        << "# Set to 0 to keep the taskbar clean and use Dock/Desktop right-click instead.\n"
-        << "show_tray_icon = " << (config.showTrayIcon ? "1" : "0") << "\n\n"
         << "[Telemetry]\n"
-        << "# Telemetry polling and refresh interval in milliseconds (default: 1000)\n"
+        << "# Polling and refresh interval in milliseconds (default: 1000 = 1 sec)\n"
         << "refresh_interval_ms = " << config.refreshIntervalMs << "\n\n";
 
     // Dynamic Hardware Introspection: Probe physical GPUs present via GpuCollector
@@ -219,16 +271,15 @@ bool ConfigManager::CreateDefaultConfigFile(const std::string& iniPath, const Ap
         }
     }
     oss << "# ----------------------------------------------------------------------------\n\n"
-        << "# Target GPU adapter index or multi-GPU target expression:\n"
-        << "#   gpu_index = 0       (monitor dedicated GPU0)\n"
-        << "#   gpu_index = 0, 1    (monitor GPU0 and GPU1 side-by-side)\n"
-        << "#   gpu_index = all     (monitor all hardware GPU adapters)\n"
+        << "# Target GPU adapter index or multi-GPU target expression (e.g. 0, '0, 1', or 'all')\n"
         << "gpu_index = " << (config.gpuTarget.empty() ? std::to_string(config.gpuIndex) : config.gpuTarget) << "\n"
-        << "# VRAM capacity calculation mode: physical (default) or usable (AI/CUDA net limit)\n"
+        << "# VRAM capacity calculation mode: physical (default) or usable (allocatable limit excluding driver carve-outs)\n"
         << "vram_mode = " << (config.vramMode == VramMode::Usable ? "usable" : "physical") << "\n"
-        << "# Telemetry category display ordering sequence\n"
-        << "order = " << JoinMetricOrder(config.metricOrder) << "\n"
-        << "# Individual metric category toggles (1 = enabled, 0 = disabled)\n"
+        << "# Integrated GPU / UMA memory display mode: usage (true active usage with [S]), shared, dedicated\n"
+        << "igpu_vram_mode = " << (config.igpuVramMode == IgpuVramMode::Shared ? "shared" : (config.igpuVramMode == IgpuVramMode::Dedicated ? "dedicated" : "usage")) << "\n"
+        << "# Background collector switches (1 = enabled, 0 = disabled)\n"
+        << "# Note: Metrics present in active layout automatically collect. These toggles force background collection\n"
+        << "# for UDP cluster streaming or logging even when omitted from the visible desktop layout.\n"
         << "show_cpu = " << (config.showCpu ? "1" : "0") << "\n"
         << "show_gpu = " << (config.showGpu ? "1" : "0") << "\n"
         << "show_ram = " << (config.showRam ? "1" : "0") << "\n"
@@ -249,26 +300,77 @@ bool ConfigManager::CreateDefaultConfigFile(const std::string& iniPath, const Ap
         << "# show_temp = 1\n"
         << "# show_power = 0\n"
         << "# show_fan = 0\n"
-        << "# label = Compute\n";
+        << "# label = Compute\n\n"
+        << "[Cluster]\n"
+        << "# Control Center Master Private Key (Curve25519 256-bit secret, 64 hex characters)\n"
+        << "# Auto-generated when exporting satellite.ini. Only the derived Public Key is placed on satellites.\n";
+    if (!config.cluster.clusterKey.empty()) {
+        oss << "cluster_key = " << config.cluster.clusterKey << "\n"
+            << "listen_port = " << config.cluster.listenPort << "\n";
+        if (!config.cluster.allowedRigs.empty()) {
+            oss << "allowed_rigs = " << config.cluster.allowedRigs << "\n\n";
+        } else {
+            oss << "# allowed_rigs = \n\n";
+        }
+    } else {
+        oss << "# cluster_key = \n"
+            << "# listen_port = 9889\n"
+            << "# allowed_rigs = \n\n";
+    }
+    oss << "[Cluster.Aliases]\n"
+        << "# Friendly display aliases for remote rigs on this Control Center\n"
+        << "# Maps remote rig_id from incoming UDP packets to custom overlay labels:\n";
+    if (!config.cluster.aliases.empty()) {
+        for (const auto& a : config.cluster.aliases) {
+            oss << a.first << " = " << a.second << "\n";
+        }
+        oss << "\n";
+    } else {
+        oss << "# rig1 = MacMini1\n"
+            << "# rig2 = LinuxWorkstation\n\n";
+    }
+    oss << "[LLM]\n"
+        << "# AI Inference Telemetry (Ollama, vLLM, llama.cpp, TGI, SGLang, OpenAI-compatible)\n"
+        << "enabled = " << (config.llm.enabled ? "1" : "0") << "\n"
+        << "endpoints = " << config.llm.endpoints << "\n"
+        << "timeout_ms = " << config.llm.timeoutMs << "\n"
+        << "poll_interval_ms = " << config.llm.pollIntervalMs << "\n"
+        << "retry_interval_ms = " << config.llm.retryIntervalMs << "\n"
+        << "decay_hold_sec = " << config.llm.decayHoldSec << "\n"
+        << "max_model_len = " << config.llm.maxModelLen << "\n"
+        << "filter_embeddings = " << (config.llm.filterEmbeddings ? "1" : "0") << "\n"
+        << "min_vram_mb = " << config.llm.minVramMb << "\n"
+        << "target_model = " << config.llm.targetModel << "\n\n"
+        << "[LLM.Aliases]\n"
+        << "# Friendly display aliases for long model names (case-insensitive substring match)\n"
+        << "# Maps 40-60 character server model identifiers down to clean compact badges:\n";
+    if (!config.llm.aliases.empty()) {
+        for (const auto& a : config.llm.aliases) {
+            oss << a.first << " = " << a.second << "\n";
+        }
+    } else {
+        oss << "# deepseek-r1-distill-qwen-14b = R1-14B\n"
+            << "# llama-3.3-70b-instruct = Llama-3.3\n";
+    }
 
     std::ofstream file(iniPath, std::ios::binary | std::ios::trunc);
     if (file.is_open()) {
         std::string content = oss.str();
         file.write(content.data(), static_cast<std::streamsize>(content.size()));
-        return file.good();
+        bool ok = file.good();
+        file.close();
+
+        if (ok && !config.cluster.clusterKey.empty()) {
+            HardenConfigFilePermissions(iniPath);
+        }
+        return ok;
     }
     return false;
 }
 
 std::string ConfigManager::GetDefaultConfigPath() {
 #ifdef _WIN32
-    // 1. Check Current Working Directory (./config.ini)
-    std::error_code cwdEc;
-    if (std::filesystem::exists("config.ini", cwdEc)) {
-        return "config.ini";
-    }
-
-    // 2. Check for Portable Mode (config.ini right next to the executable)
+    // 1. Check for Portable Mode (config.ini right next to the executable)
     char exePath[MAX_PATH] = { 0 };
     if (GetModuleFileNameA(nullptr, exePath, MAX_PATH) > 0) {
         std::string path = exePath;
@@ -307,13 +409,7 @@ std::string ConfigManager::GetDefaultConfigPath() {
     return "config.ini";
 #elif defined(__APPLE__)
     // macOS Implementation
-    // 1. Check for Current Working Directory (./config.ini)
-    std::error_code cwdEc;
-    if (std::filesystem::exists("config.ini", cwdEc) && access("config.ini", R_OK) == 0) {
-        return "config.ini";
-    }
-
-    // 2. Check for Portable Mode (config.ini right next to executable / inside bundle)
+    // 1. Check for Portable Mode (config.ini right next to executable / inside bundle)
     char exePath[4096] = { 0 };
     uint32_t bufSize = sizeof(exePath);
     if (_NSGetExecutablePath(exePath, &bufSize) == 0) {
@@ -352,13 +448,7 @@ std::string ConfigManager::GetDefaultConfigPath() {
     return "config.ini";
 #else
     // Linux Implementation
-    // 1. Check for Current Working Directory (./config.ini)
-    std::error_code cwdEc;
-    if (std::filesystem::exists("config.ini", cwdEc) && access("config.ini", R_OK) == 0) {
-        return "config.ini";
-    }
-
-    // 2. Check for Portable Mode (config.ini right next to /proc/self/exe)
+    // 1. Check for Portable Mode (config.ini right next to /proc/self/exe)
     char exePath[4096] = { 0 };
     ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
     if (len > 0) {
@@ -426,6 +516,7 @@ bool ConfigManager::MigrateSchema(const std::string& iniPath, int /*oldVersion*/
     std::unordered_map<std::string, std::unordered_set<std::string>> existingKeys;
     std::unordered_set<std::string> existingSections;
     bool hasGpuSectionOrComment = false;
+    bool hasClusterKey = false;
     std::string currentSec;
 
     for (const auto& l : lines) {
@@ -444,6 +535,12 @@ bool ConfigManager::MigrateSchema(const std::string& iniPath, int /*oldVersion*/
                 std::string key = trim(t.substr(0, eqPos));
                 for (char& c : key) c = static_cast<char>(tolower(c));
                 existingKeys[currentSec].insert(key);
+                if (currentSec == "cluster" && key == "cluster_key") {
+                    std::string val = trim(t.substr(eqPos + 1));
+                    if (!val.empty()) {
+                        hasClusterKey = true;
+                    }
+                }
             }
         }
     }
@@ -454,20 +551,33 @@ bool ConfigManager::MigrateSchema(const std::string& iniPath, int /*oldVersion*/
     bool needVramMode = (existingKeys["telemetry"].count("vram_mode") == 0);
     bool needOrder = (existingKeys["telemetry"].count("order") == 0);
     bool needShowNet = (existingKeys["telemetry"].count("show_net") == 0);
-    bool needShowTrayIcon = (existingKeys["appearance"].count("show_tray_icon") == 0);
+    bool hasShowTrayIcon = (existingKeys["appearance"].count("show_tray_icon") > 0) ||
+                           (existingKeys["general"].count("show_tray_icon") > 0);
+    bool needShowTrayIcon = !hasShowTrayIcon;
     bool needGpuOverrides = !hasGpuSectionOrComment;
+    bool needClusterSec = (existingSections.count("cluster") == 0);
+    bool needLlmSec = (existingSections.count("llm") == 0);
 
     std::ostringstream out;
 
     if (needBareStatsSec) {
         out << "[BareStats]\n"
-            << "# Configuration schema version. Used for automated zero-overhead in-place migrations.\n"
+            << "# Configuration schema version. Used for automated near-zero-overhead in-place migrations.\n"
             << "schema_version = " << CURRENT_CONFIG_SCHEMA_VERSION << "\n\n";
     }
 
     currentSec = "";
     auto injectMissingForSec = [&](const std::string& sec) {
-        if (sec == "position") {
+        if (sec == "general") {
+            if (needShowTrayIcon) {
+                out << "# System tray / menu bar icon (1 = enabled, 0 = disabled)\n"
+                    << "#   Windows: System Tray Notification Area\n"
+                    << "#   macOS:   Top Menu Bar (NSStatusItem)\n"
+                    << "#   Linux:   AppIndicator / StatusNotifierItem top panel indicator\n"
+                    << "show_tray_icon = 1\n\n";
+                needShowTrayIcon = false;
+            }
+        } else if (sec == "position") {
             if (needLayout) {
                 out << "# Layout geometry: horizontal (single-line status ribbon) or grid (compact multi-row widget)\n"
                     << "layout = horizontal\n\n";
@@ -495,12 +605,6 @@ bool ConfigManager::MigrateSchema(const std::string& iniPath, int /*oldVersion*/
                 needShowNet = false;
             }
         } else if (sec == "appearance") {
-            if (needShowTrayIcon) {
-                out << "# Show icon in Linux system tray / top panel (1 = enabled, 0 = disabled)\n"
-                    << "# Set to 0 to keep the taskbar clean and use Dock/Desktop right-click instead.\n"
-                    << "show_tray_icon = 0\n\n";
-                needShowTrayIcon = false;
-            }
             if (needGpuOverrides) {
                 out << "\n# Per-GPU Hierarchical Configuration Overrides (optional)\n"
                     << "# [GPU0]\n"
@@ -543,11 +647,54 @@ bool ConfigManager::MigrateSchema(const std::string& iniPath, int /*oldVersion*/
         injectMissingForSec(currentSec);
     }
 
+    if (needShowTrayIcon) {
+        out << "\n[General]\n"
+            << "# System tray / menu bar icon (1 = enabled, 0 = disabled)\n"
+            << "#   Windows: System Tray Notification Area\n"
+            << "#   macOS:   Top Menu Bar (NSStatusItem)\n"
+            << "#   Linux:   AppIndicator / StatusNotifierItem top panel indicator\n"
+            << "show_tray_icon = 1\n";
+        needShowTrayIcon = false;
+    }
+
+    if (needClusterSec) {
+        out << "\n[Cluster]\n"
+            << "# 256-bit AEAD Cluster Secret for encrypted UDP Satellite communication (64 hex characters)\n"
+            << "# cluster_key = \n"
+            << "listen_port = 9889\n";
+    }
+
+    if (needLlmSec) {
+        out << "\n[LLM]\n"
+            << "# Enable local/remote AI inference monitoring\n"
+            << "enabled = 1\n"
+            << "# Direct Pull HTTP endpoints (comma or semicolon separated)\n"
+            << "# Auto-probes popular local frameworks: Ollama (11434), llama.cpp (8080), vLLM/TGI/SGLang (8000), LM Studio (1234), Python (38111)\n"
+            << "endpoints = local=http://127.0.0.1:11434, local=http://127.0.0.1:8080, local=http://127.0.0.1:8000, local=http://127.0.0.1:1234, local=http://127.0.0.1:38111\n"
+            << "timeout_ms = 300\n"
+            << "poll_interval_ms = 1000\n"
+            << "retry_interval_ms = 10000\n"
+            << "decay_hold_sec = 3\n"
+            << "max_model_len = 16\n"
+            << "filter_embeddings = 1\n"
+            << "min_vram_mb = 500\n"
+            << "target_model = active\n\n"
+            << "[LLM.Aliases]\n"
+            << "# Friendly display aliases for long model names (case-insensitive substring match)\n"
+            << "# deepseek-r1-distill-qwen-14b = R1-14B\n";
+    }
+
     std::string newContent = out.str();
     std::ofstream outFile(iniPath, std::ios::binary | std::ios::trunc);
     if (outFile.is_open()) {
         outFile.write(newContent.data(), static_cast<std::streamsize>(newContent.size()));
-        return outFile.good();
+        bool ok = outFile.good();
+        outFile.close();
+        if (ok && hasClusterKey) {
+            HardenConfigFilePermissions(iniPath);
+            HardenConfigFilePermissions(bakPath);
+        }
+        return ok;
     }
     return false;
 }
@@ -557,13 +704,13 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
 
     std::error_code ec;
     if (!std::filesystem::exists(iniPath, ec)) {
-        CreateDefaultConfigFile(iniPath, config);
+        // Return in-memory defaults without writing to disk
         return config;
     }
 
     IniDocument doc;
     if (!doc.Load(iniPath)) {
-        CreateDefaultConfigFile(iniPath, config);
+        // Corrupted or unreadable; return in-memory defaults without overwriting
         return config;
     }
 
@@ -571,6 +718,22 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
     if (diskVersion < CURRENT_CONFIG_SCHEMA_VERSION) {
         MigrateSchema(iniPath, diskVersion, CURRENT_CONFIG_SCHEMA_VERSION);
         doc.Load(iniPath);
+    }
+
+    // [General]
+    std::string headlessStr = doc.GetString("General", "headless", "0");
+    for (char& c : headlessStr) c = static_cast<char>(tolower(c));
+    config.headless = (headlessStr == "1" || headlessStr == "true" || headlessStr == "yes" || headlessStr == "on");
+    if (doc.HasKey("General", "show_tray_icon")) {
+        config.showTrayIcon = doc.GetBool("General", "show_tray_icon", config.showTrayIcon);
+    } else if (doc.HasKey("Appearance", "show_tray_icon")) {
+#if defined(_WIN32) || defined(__APPLE__)
+        // Legacy v1.3 migration erroneously injected show_tray_icon = 0 into [Appearance].
+        // On Windows and macOS, default to true unless explicitly overridden in [General].
+        config.showTrayIcon = true;
+#else
+        config.showTrayIcon = doc.GetBool("Appearance", "show_tray_icon", config.showTrayIcon);
+#endif
     }
 
     // [Position]
@@ -582,7 +745,10 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
     config.customRelY = doc.GetInt("Position", "custom_rel_y", config.customRelY);
     config.margin = doc.GetInt("Position", "margin", config.margin);
 
-    std::string layoutStr = doc.GetString("Position", "layout", "horizontal");
+    // [Layout] (with full fallback to [Position])
+    std::string layoutStr = doc.GetString("Layout", "mode", "");
+    if (layoutStr.empty()) layoutStr = doc.GetString("Layout", "layout", "");
+    if (layoutStr.empty()) layoutStr = doc.GetString("Position", "layout", "horizontal");
     for (char& c : layoutStr) c = static_cast<char>(tolower(c));
     if (layoutStr == "grid" || layoutStr == "multiline" || layoutStr == "multi-line") {
         config.layout = OverlayLayout::Grid;
@@ -592,31 +758,59 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
         config.layout = OverlayLayout::Horizontal;
     }
 
-    config.maxGpusPerRow = doc.GetInt("Position", "max_gpus_per_row", config.maxGpusPerRow);
+    config.maxGpusPerRow = doc.GetInt("Layout", "max_gpus_per_row", doc.GetInt("Position", "max_gpus_per_row", config.maxGpusPerRow));
     if (config.maxGpusPerRow < 1) config.maxGpusPerRow = 1;
 
-    std::string gridModeStr = doc.GetString("Position", "grid_mode", "unified");
+    std::string gridModeStr = doc.GetString("Layout", "grid_mode", doc.GetString("Position", "grid_mode", "unified"));
     for (char& c : gridModeStr) c = static_cast<char>(tolower(c));
     config.gridMode = (gridModeStr == "islands" || gridModeStr == "split" || gridModeStr == "distributed")
         ? GridMode::Islands
         : GridMode::Unified;
 
-    config.cellGap = doc.GetInt("Position", "cell_gap", config.cellGap);
+    config.cellGap = doc.GetInt("Layout", "cell_gap", doc.GetInt("Position", "cell_gap", config.cellGap));
     if (config.cellGap < 0) config.cellGap = 0;
-    config.rowGap = doc.GetInt("Position", "row_gap", config.rowGap);
+    config.rowGap = doc.GetInt("Layout", "row_gap", doc.GetInt("Position", "row_gap", config.rowGap));
     if (config.rowGap < 0) config.rowGap = 0;
 
-    // Parse Custom Matrix Grid rows
+    // Parse metric display order (used for 'horizontal' ribbon and Row 0 of 'grid', or as bridge to CustomGrid)
+    std::string orderStr = doc.GetString("Layout", "order", "");
+    if (orderStr.empty()) {
+        orderStr = doc.GetString("Telemetry", "order", "CPU, GPU, RAM, NET");
+    }
+    std::vector<std::string> parsedOrder;
+    std::stringstream ss(orderStr);
+    std::string ordToken;
+    while (std::getline(ss, ordToken, ',')) {
+        size_t first = ordToken.find_first_not_of(" \t\r\n");
+        size_t last = ordToken.find_last_not_of(" \t\r\n");
+        if (first != std::string::npos && last != std::string::npos) {
+            std::string trimmed = ordToken.substr(first, last - first + 1);
+            if (!trimmed.empty()) {
+                parsedOrder.push_back(trimmed);
+            }
+        }
+    }
+    if (!parsedOrder.empty()) {
+        config.metricOrder = parsedOrder;
+    }
+
+    // Parse Custom Matrix Grid rows from [Layout], [Position], or [Grid]
     int maxColsFound = 0;
     for (int r = 1; r <= 32; ++r) {
         std::string rowKey = "grid_row_" + std::to_string(r);
-        std::string rowVal = doc.GetString("Position", rowKey, "");
+        std::string rowVal = doc.GetString("Layout", rowKey, "");
+        if (rowVal.empty()) {
+            rowVal = doc.GetString("Position", rowKey, "");
+        }
         if (rowVal.empty()) {
             rowVal = doc.GetString("Grid", rowKey, "");
         }
         if (rowVal.empty()) {
             std::string altKey = "row_" + std::to_string(r);
-            rowVal = doc.GetString("Position", altKey, "");
+            rowVal = doc.GetString("Layout", altKey, "");
+            if (rowVal.empty()) {
+                rowVal = doc.GetString("Position", altKey, "");
+            }
             if (rowVal.empty()) {
                 rowVal = doc.GetString("Grid", altKey, "");
             }
@@ -650,10 +844,25 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
             for (char& c : tok) c = static_cast<char>(tolower(c));
 
             int span = 1;
-            size_t colonPos = tok.find(':');
-            if (colonPos != std::string::npos) {
-                std::string spanPart = tok.substr(colonPos + 1);
-                tok = tok.substr(0, colonPos);
+            // Check for explicit span syntax: e.g. token:span(2), token:colspan(2), or token:2
+            size_t spanPos = tok.rfind(":span(");
+            if (spanPos == std::string::npos) {
+                spanPos = tok.rfind(":colspan(");
+            }
+            if (spanPos == std::string::npos) {
+                // Check if ends with purely numeric suffix after the last colon, e.g. "gpu0:2"
+                size_t lastColon = tok.rfind(':');
+                if (lastColon != std::string::npos && lastColon > 0) {
+                    std::string suffix = tok.substr(lastColon + 1);
+                    if (!suffix.empty() && std::all_of(suffix.begin(), suffix.end(), ::isdigit)) {
+                        spanPos = lastColon;
+                    }
+                }
+            }
+
+            if (spanPos != std::string::npos) {
+                std::string spanPart = tok.substr(spanPos + 1);
+                tok = tok.substr(0, spanPos);
                 size_t numStart = spanPart.find_first_of("0123456789");
                 if (numStart != std::string::npos) {
                     try {
@@ -688,16 +897,72 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
     config.customGrid.numRows = static_cast<int>(config.customGrid.rows.size());
 
     if ((config.layout == OverlayLayout::CustomGrid || config.gridMode == GridMode::Islands) && config.customGrid.IsEmpty()) {
-        GridRow r0;
-        r0.cells.push_back({ "cpu", 0, 1 });
-        r0.cells.push_back({ "ram", 1, 1 });
-        r0.cells.push_back({ "net", 2, 1 });
-        GridRow r1;
-        r1.cells.push_back({ "gpu", 0, 3 });
-        config.customGrid.rows.push_back(std::move(r0));
-        config.customGrid.rows.push_back(std::move(r1));
-        config.customGrid.numCols = 3;
-        config.customGrid.numRows = 2;
+        if (!config.metricOrder.empty()) {
+            std::vector<std::string> nonGpuTokens;
+            std::vector<std::string> gpuTokens;
+
+            for (const auto& tok : config.metricOrder) {
+                std::string t = tok;
+                size_t first = t.find_first_not_of(" \t\r\n");
+                size_t last = t.find_last_not_of(" \t\r\n");
+                if (first != std::string::npos && last != std::string::npos) {
+                    t = t.substr(first, last - first + 1);
+                }
+                for (char& c : t) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                if (t.empty()) continue;
+
+                if (t == "gpu" || t == "graphics" || t == "video" || t.rfind("gpu", 0) == 0 || t.find(":gpu") != std::string::npos) {
+                    gpuTokens.push_back(t);
+                } else {
+                    nonGpuTokens.push_back(t);
+                }
+            }
+
+            if (!nonGpuTokens.empty() && !gpuTokens.empty()) {
+                // Multi-row bridge: Non-GPU metrics on Row 0, GPU metrics on Row 1
+                int cols = static_cast<int>(std::max(nonGpuTokens.size(), gpuTokens.size()));
+                GridRow r0;
+                int c0 = 0;
+                for (const auto& t : nonGpuTokens) {
+                    r0.cells.push_back({ t, c0++, 1 });
+                }
+                GridRow r1;
+                int c1 = 0;
+                int span = (gpuTokens.size() == 1 && cols > 1) ? cols : 1;
+                for (const auto& t : gpuTokens) {
+                    r1.cells.push_back({ t, c1, span });
+                    c1 += span;
+                }
+                config.customGrid.rows.push_back(std::move(r0));
+                config.customGrid.rows.push_back(std::move(r1));
+                config.customGrid.numCols = std::max(c0, c1);
+                config.customGrid.numRows = 2;
+            } else if (!nonGpuTokens.empty() || !gpuTokens.empty()) {
+                const auto& activeList = !nonGpuTokens.empty() ? nonGpuTokens : gpuTokens;
+                GridRow r0;
+                int col = 0;
+                for (const auto& t : activeList) {
+                    r0.cells.push_back({ t, col++, 1 });
+                }
+                config.customGrid.numCols = static_cast<int>(r0.cells.size());
+                config.customGrid.rows.push_back(std::move(r0));
+                config.customGrid.numRows = 1;
+            }
+        }
+
+        // If metricOrder was also empty, fall back to default compact 2-row template
+        if (config.customGrid.IsEmpty()) {
+            GridRow r0;
+            r0.cells.push_back({ "cpu", 0, 1 });
+            r0.cells.push_back({ "ram", 1, 1 });
+            r0.cells.push_back({ "net", 2, 1 });
+            GridRow r1;
+            r1.cells.push_back({ "gpu", 0, 3 });
+            config.customGrid.rows.push_back(std::move(r0));
+            config.customGrid.rows.push_back(std::move(r1));
+            config.customGrid.numCols = 3;
+            config.customGrid.numRows = 2;
+        }
     }
     if (config.gridMode == GridMode::Islands) {
         config.layout = OverlayLayout::CustomGrid;
@@ -734,9 +999,20 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
     config.enableDynamicColors = doc.GetBool("Appearance", "enable_dynamic_colors", config.enableDynamicColors);
     config.dropShadow = doc.GetBool("Appearance", "drop_shadow", config.dropShadow);
 
-    std::string sepStr = doc.GetString("Appearance", "separator", "");
-    if (!sepStr.empty()) {
-        config.separator = Utf8ToWide(sepStr);
+    config.symbolStyle = doc.GetString("Appearance", "symbol_style", "auto");
+    for (char& c : config.symbolStyle) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    if (doc.HasKey("Appearance", "separator")) {
+        config.hasUserDefinedSeparator = true;
+        std::string sepStr = doc.GetString("Appearance", "separator", "");
+        if (sepStr == "none" || sepStr == "\"\"" || sepStr == "''") {
+            config.separator = L"";
+        } else {
+            config.separator = Utf8ToWide(sepStr);
+        }
+    } else {
+        config.hasUserDefinedSeparator = false;
+        config.separator = L"\x2502";
     }
 
     std::string opStr = doc.GetString("Appearance", "opacity", "100");
@@ -753,7 +1029,6 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
         config.opacity = 100;
     }
     config.opacity = std::clamp(config.opacity, 10, 100);
-    config.showTrayIcon = doc.GetBool("Appearance", "show_tray_icon", false);
 
     // [Telemetry]
     config.refreshIntervalMs = static_cast<uint32_t>(doc.GetInt("Telemetry", "refresh_interval_ms", static_cast<int>(config.refreshIntervalMs)));
@@ -799,19 +1074,38 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
         config.gpuIndex = static_cast<int>(config.targetGpuIndices[0]);
     }
 
-    if (config.layout == OverlayLayout::CustomGrid || config.gridMode == GridMode::Islands) {
-        bool hasGpuToken = false;
-        for (const auto& row : config.customGrid.rows) {
-            for (const auto& cell : row.cells) {
-                if (cell.token.rfind("gpu", 0) == 0) {
+    // Multi-GPU auto-enable logic:
+    // If layout is Horizontal/Grid and metricOrder has "gpu" (or multiple "gpuN" tokens),
+    // or if layout is CustomGrid / Islands and grid has gpu tokens,
+    // ensure all GPUs are targeted so multi-GPU systems display out-of-the-box without manual config.
+    if (!config.targetAllGpus) {
+        if (config.layout == OverlayLayout::Horizontal || config.layout == OverlayLayout::Grid) {
+            bool hasGpuToken = false;
+            for (const auto& item : config.metricOrder) {
+                std::string lowerItem = item;
+                for (char& c : lowerItem) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                if (lowerItem == "gpu" || lowerItem == "graphics" || lowerItem == "video" || lowerItem.rfind("gpu", 0) == 0) {
                     hasGpuToken = true;
                     break;
                 }
             }
-            if (hasGpuToken) break;
-        }
-        if (hasGpuToken && !config.targetAllGpus) {
-            config.targetAllGpus = true;
+            if (hasGpuToken) {
+                config.targetAllGpus = true;
+            }
+        } else if (config.layout == OverlayLayout::CustomGrid) {
+            bool hasGpuToken = false;
+            for (const auto& row : config.customGrid.rows) {
+                for (const auto& cell : row.cells) {
+                    if (cell.token.rfind("gpu", 0) == 0) {
+                        hasGpuToken = true;
+                        break;
+                    }
+                }
+                if (hasGpuToken) break;
+            }
+            if (hasGpuToken) {
+                config.targetAllGpus = true;
+            }
         }
     }
 
@@ -823,25 +1117,14 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
         config.vramMode = VramMode::Physical;
     }
 
-    std::string orderStr = doc.GetString("Telemetry", "order", "CPU, GPU, RAM, NET");
-    std::vector<std::string> parsedOrder;
-    std::stringstream ss(orderStr);
-    std::string ordToken;
-    while (std::getline(ss, ordToken, ',')) {
-        size_t first = ordToken.find_first_not_of(" \t\r\n");
-        size_t last = ordToken.find_last_not_of(" \t\r\n");
-        if (first != std::string::npos && last != std::string::npos) {
-            std::string trimmed = ordToken.substr(first, last - first + 1);
-            for (char& c : trimmed) c = static_cast<char>(toupper(c));
-            if (trimmed == "CPU" || trimmed == "GPU" || trimmed == "RAM" || trimmed == "NET") {
-                if (std::find(parsedOrder.begin(), parsedOrder.end(), trimmed) == parsedOrder.end()) {
-                    parsedOrder.push_back(trimmed);
-                }
-            }
-        }
-    }
-    if (!parsedOrder.empty()) {
-        config.metricOrder = parsedOrder;
+    std::string igpuVramStr = doc.GetString("Telemetry", "igpu_vram_mode", doc.GetString("Hardware", "igpu_vram_mode", "usage"));
+    for (char& c : igpuVramStr) c = static_cast<char>(tolower(c));
+    if (igpuVramStr == "shared") {
+        config.igpuVramMode = IgpuVramMode::Shared;
+    } else if (igpuVramStr == "dedicated") {
+        config.igpuVramMode = IgpuVramMode::Dedicated;
+    } else {
+        config.igpuVramMode = IgpuVramMode::Usage;
     }
 
     config.showCpu = doc.GetBool("Telemetry", "show_cpu", config.showCpu);
@@ -871,6 +1154,36 @@ AppConfig ConfigManager::Load(const std::string& iniPath) {
         }
     }
 
+    // [LLM]
+    config.llm.enabled = doc.GetBool("LLM", "enabled", config.llm.enabled);
+    config.llm.endpoints = doc.GetString("LLM", "endpoints", config.llm.endpoints);
+    config.llm.timeoutMs = static_cast<uint32_t>(doc.GetInt("LLM", "timeout_ms", static_cast<int>(config.llm.timeoutMs)));
+    config.llm.pollIntervalMs = static_cast<uint32_t>(doc.GetInt("LLM", "poll_interval_ms", static_cast<int>(config.llm.pollIntervalMs)));
+    config.llm.retryIntervalMs = static_cast<uint32_t>(doc.GetInt("LLM", "retry_interval_ms", static_cast<int>(config.llm.retryIntervalMs)));
+    config.llm.decayHoldSec = static_cast<uint32_t>(doc.GetInt("LLM", "decay_hold_sec", static_cast<int>(config.llm.decayHoldSec)));
+    config.llm.maxModelLen = static_cast<uint32_t>(doc.GetInt("LLM", "max_model_len", static_cast<int>(config.llm.maxModelLen)));
+    config.llm.filterEmbeddings = doc.GetBool("LLM", "filter_embeddings", config.llm.filterEmbeddings);
+    config.llm.minVramMb = static_cast<uint32_t>(doc.GetInt("LLM", "min_vram_mb", static_cast<int>(config.llm.minVramMb)));
+    config.llm.targetModel = doc.GetString("LLM", "target_model", config.llm.targetModel);
+
+    // [LLM.Aliases]
+    auto aliasKeys = doc.GetKeys("LLM.Aliases");
+    for (const auto& k : aliasKeys) {
+        config.llm.aliases[k] = doc.GetString("LLM.Aliases", k);
+    }
+
+    // [Cluster]
+    config.cluster.clusterKey = doc.GetString("Cluster", "cluster_key", config.cluster.clusterKey);
+    config.cluster.listenPort = static_cast<uint16_t>(doc.GetInt("Cluster", "listen_port", static_cast<int>(config.cluster.listenPort)));
+    config.cluster.allowedRigs = doc.GetString("Cluster", "allowed_rigs", config.cluster.allowedRigs);
+
+    // [Cluster.Aliases]
+    config.cluster.aliases.clear();
+    auto clusterAliasKeys = doc.GetKeys("Cluster.Aliases");
+    for (const auto& k : clusterAliasKeys) {
+        config.cluster.aliases[k] = doc.GetString("Cluster.Aliases", k);
+    }
+
     return config;
 }
 
@@ -891,6 +1204,8 @@ bool ConfigManager::Save(const std::string& iniPath, const AppConfig& config) {
     IniDocument doc;
     doc.Load(iniPath);
 
+    doc.SetBool("General", "headless", config.headless);
+    doc.SetBool("General", "show_tray_icon", config.showTrayIcon);
     doc.SetInt("Position", "monitor_index", config.monitorIndex);
     doc.SetString("Position", "preset", MonitorHelper::PresetToString(config.preset));
     doc.SetInt("Position", "custom_x", config.customX);
@@ -898,11 +1213,30 @@ bool ConfigManager::Save(const std::string& iniPath, const AppConfig& config) {
     doc.SetInt("Position", "custom_rel_x", config.customRelX);
     doc.SetInt("Position", "custom_rel_y", config.customRelY);
     doc.SetInt("Position", "margin", config.margin);
-    doc.SetString("Position", "layout", config.layout == OverlayLayout::CustomGrid ? "custom_grid" : (config.layout == OverlayLayout::Grid ? "grid" : "horizontal"));
-    doc.SetString("Position", "grid_mode", config.gridMode == GridMode::Islands ? "islands" : "unified");
-    doc.SetInt("Position", "cell_gap", config.cellGap);
-    doc.SetInt("Position", "row_gap", config.rowGap);
-    doc.SetInt("Position", "max_gpus_per_row", config.maxGpusPerRow);
+    std::string layoutModeStr = (config.layout == OverlayLayout::CustomGrid ? "custom_grid" : (config.layout == OverlayLayout::Grid ? "grid" : "horizontal"));
+    std::string gridModeStr = (config.gridMode == GridMode::Islands ? "islands" : "unified");
+    std::string orderStr = JoinMetricOrder(config.metricOrder);
+
+    // Canonical [Layout] section
+    doc.SetString("Layout", "mode", layoutModeStr);
+    doc.RemoveKey("Layout", "layout");
+    doc.SetString("Layout", "order", orderStr);
+    doc.SetString("Layout", "grid_mode", gridModeStr);
+    doc.SetInt("Layout", "cell_gap", config.cellGap);
+    doc.SetInt("Layout", "row_gap", config.rowGap);
+    doc.SetInt("Layout", "max_gpus_per_row", config.maxGpusPerRow);
+
+    // Clean up any misplaced layout keys from [Position]
+    doc.RemoveKey("Position", "layout");
+    doc.RemoveKey("Position", "mode");
+    doc.RemoveKey("Position", "grid_mode");
+    doc.RemoveKey("Position", "cell_gap");
+    doc.RemoveKey("Position", "row_gap");
+    doc.RemoveKey("Position", "max_gpus_per_row");
+    for (int r = 1; r <= 32; ++r) {
+        doc.RemoveKey("Position", "grid_row_" + std::to_string(r));
+        doc.RemoveKey("Position", "row_" + std::to_string(r));
+    }
 
     doc.SetString("Appearance", "font_name", WideToUtf8(config.fontFace));
     doc.SetString("Appearance", "font_weight", WideToUtf8(config.fontWeight));
@@ -914,14 +1248,23 @@ bool ConfigManager::Save(const std::string& iniPath, const AppConfig& config) {
     doc.SetString("Appearance", "color_critical", ColorToHex(config.colorCritical));
     doc.SetBool("Appearance", "enable_dynamic_colors", config.enableDynamicColors);
     doc.SetBool("Appearance", "drop_shadow", config.dropShadow);
-    doc.SetString("Appearance", "separator", WideToUtf8(config.separator));
+    doc.SetString("Appearance", "symbol_style", config.symbolStyle);
+    if (config.hasUserDefinedSeparator) {
+        doc.SetString("Appearance", "separator", config.separator.empty() ? "none" : WideToUtf8(config.separator));
+    } else {
+        doc.SetString("Appearance", "separator", WideToUtf8(config.separator));
+    }
     doc.SetInt("Appearance", "opacity", config.opacity);
-    doc.SetBool("Appearance", "show_tray_icon", config.showTrayIcon);
+    doc.RemoveKey("Appearance", "show_tray_icon");
 
     doc.SetInt("Telemetry", "refresh_interval_ms", static_cast<int>(config.refreshIntervalMs));
     doc.SetString("Telemetry", "gpu_index", config.gpuTarget.empty() ? std::to_string(config.gpuIndex) : config.gpuTarget);
     doc.SetString("Telemetry", "vram_mode", config.vramMode == VramMode::Usable ? "usable" : "physical");
-    doc.SetString("Telemetry", "order", JoinMetricOrder(config.metricOrder));
+    std::string igpuStr = "usage";
+    if (config.igpuVramMode == IgpuVramMode::Shared) igpuStr = "shared";
+    else if (config.igpuVramMode == IgpuVramMode::Dedicated) igpuStr = "dedicated";
+    doc.SetString("Telemetry", "igpu_vram_mode", igpuStr);
+    doc.RemoveKey("Telemetry", "order");
     doc.SetBool("Telemetry", "show_cpu", config.showCpu);
     doc.SetBool("Telemetry", "show_gpu", config.showGpu);
     doc.SetBool("Telemetry", "show_ram", config.showRam);
@@ -946,7 +1289,108 @@ bool ConfigManager::Save(const std::string& iniPath, const AppConfig& config) {
         }
     }
 
-    return doc.Save(iniPath);
+    if (!config.cluster.clusterKey.empty()) {
+        doc.SetString("Cluster", "cluster_key", config.cluster.clusterKey);
+        doc.SetInt("Cluster", "listen_port", static_cast<int>(config.cluster.listenPort));
+        if (!config.cluster.allowedRigs.empty()) {
+            doc.SetString("Cluster", "allowed_rigs", config.cluster.allowedRigs);
+        }
+    }
+
+    for (const auto& alias : config.cluster.aliases) {
+        doc.SetString("Cluster.Aliases", alias.first, alias.second);
+    }
+
+    doc.SetBool("LLM", "enabled", config.llm.enabled);
+    doc.SetString("LLM", "endpoints", config.llm.endpoints);
+    doc.SetInt("LLM", "timeout_ms", static_cast<int>(config.llm.timeoutMs));
+    doc.SetInt("LLM", "poll_interval_ms", static_cast<int>(config.llm.pollIntervalMs));
+    doc.SetInt("LLM", "retry_interval_ms", static_cast<int>(config.llm.retryIntervalMs));
+    doc.SetInt("LLM", "decay_hold_sec", static_cast<int>(config.llm.decayHoldSec));
+    doc.SetInt("LLM", "max_model_len", static_cast<int>(config.llm.maxModelLen));
+    doc.SetBool("LLM", "filter_embeddings", config.llm.filterEmbeddings);
+    doc.SetInt("LLM", "min_vram_mb", static_cast<int>(config.llm.minVramMb));
+    doc.SetString("LLM", "target_model", config.llm.targetModel);
+
+    for (const auto& alias : config.llm.aliases) {
+        doc.SetString("LLM.Aliases", alias.first, alias.second);
+    }
+
+    bool ok = doc.Save(iniPath);
+    if (ok && !config.cluster.clusterKey.empty()) {
+        HardenConfigFilePermissions(iniPath);
+    }
+    return ok;
+}
+
+bool ConfigManager::ExportSatelliteIni(const std::string& targetPath, const std::string& clusterKey, const std::string& rigId, const std::string& targetHost, uint16_t targetPort) {
+    std::string effectiveRigId = rigId;
+    std::string effectiveTargetHost = targetHost;
+    uint16_t effectiveTargetPort = targetPort;
+
+    std::error_code ec;
+    if (std::filesystem::exists(targetPath, ec)) {
+        // Safety backup: preserve pre-existing satellite.ini
+        std::filesystem::copy_file(targetPath, targetPath + ".bak", std::filesystem::copy_options::overwrite_existing, ec);
+
+        // Preserve custom user settings (e.g. customized rig_id or target_host)
+        IniDocument existingDoc;
+        if (existingDoc.Load(targetPath)) {
+            std::string existingRig = existingDoc.GetString("Satellite", "rig_id", "");
+            if (!existingRig.empty() && rigId == "rig1") {
+                effectiveRigId = existingRig;
+            }
+            std::string existingHost = existingDoc.GetString("Satellite", "target_host", "");
+            if (!existingHost.empty() && targetHost == "auto") {
+                effectiveTargetHost = existingHost;
+            }
+            int existingPort = existingDoc.GetInt("Satellite", "target_port", 0);
+            if (existingPort > 0 && targetPort == 9889) {
+                effectiveTargetPort = static_cast<uint16_t>(existingPort);
+            }
+        }
+    }
+
+    std::ofstream ofs(targetPath, std::ios::binary | std::ios::trunc);
+    if (!ofs.is_open()) return false;
+
+    // Derive 256-bit Curve25519 public key from private clusterKey
+    std::string pubKeyHex;
+    uint8_t privKeyBytes[Crypto::KEY_SIZE] = {0};
+    if (Crypto::HexToKey(clusterKey, privKeyBytes)) {
+        uint8_t pubKeyBytes[Crypto::KEY_SIZE] = {0};
+        Crypto::DerivePublicKey(privKeyBytes, pubKeyBytes);
+        pubKeyHex = Crypto::KeyToHex(pubKeyBytes);
+        Crypto::SecureWipe(privKeyBytes, sizeof(privKeyBytes));
+    }
+
+    ofs << "# BareStats Satellite Configuration\n"
+        << "# Copy this file alongside BareStats binary on the remote rig.\n"
+        << "# Run 'BareStats.exe --service-install' (or 'sudo ./barestats --service-install') to register the service.\n\n"
+        << "[Satellite]\n"
+        << "# Unique identifier for this remote rig (e.g. rig1, rig2, workstation)\n"
+        << "rig_id = " << effectiveRigId << "\n\n"
+        << "# Destination IP of your Command Center machine (or 'auto' for subnet UDP broadcast)\n"
+        << "target_host = " << effectiveTargetHost << "\n\n"
+        << "# Destination UDP port configured on Command Center (default: 9889)\n"
+        << "target_port = " << effectiveTargetPort << "\n\n"
+        << "# 256-bit Asymmetric Curve25519 Public Key of Command Center (Sealed Box encryption)\n"
+        << "# Remote satellites seal telemetry using ephemeral ECDH; only the Command Center's private cluster_key can decrypt it.\n"
+        << "public_key = " << pubKeyHex << "\n\n"
+        << "# Sampling and telemetry push interval in milliseconds\n"
+        << "refresh_interval_ms = 1000\n\n"
+        << "# Multi-Target Architecture (Optional):\n"
+        << "# If this rig reports to multiple Command Centers (e.g. CenterA and CenterB), define target blocks:\n"
+        << "# [Target.CenterA]\n"
+        << "# target_host = 192.168.0.10\n"
+        << "# target_port = 9889\n"
+        << "# public_key = " << pubKeyHex << "\n"
+        << "#\n"
+        << "# [Target.CenterB]\n"
+        << "# target_host = auto\n"
+        << "# target_port = 9889\n"
+        << "# public_key = <CenterB_public_key_hex>\n";
+    return ofs.good();
 }
 
 } // namespace BareStats

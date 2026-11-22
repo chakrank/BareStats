@@ -103,4 +103,47 @@ std::optional<double> D3dKmtCollector::QueryEngineUtilization(const LUID& adapte
     return state.lastUtilization;
 }
 
+std::optional<D3dKmtMemoryStats> D3dKmtCollector::QueryMemoryUsage(const LUID& adapterLuid) {
+    if (!isAvailable_ || !pfnQueryStats_) {
+        return std::nullopt;
+    }
+
+    auto pfn = reinterpret_cast<PFN_D3DKMTQueryStatistics>(pfnQueryStats_);
+
+    D3DKMT_QUERYSTATISTICS query{};
+    query.Type = D3DKMT_QUERYSTATISTICS_ADAPTER;
+    query.AdapterLuid = adapterLuid;
+
+    if (pfn(&query) != 0) {
+        return std::nullopt;
+    }
+
+    ULONG nbSegments = query.QueryResult.AdapterInformation.NbSegments;
+    if (nbSegments == 0) {
+        return std::nullopt;
+    }
+
+    D3dKmtMemoryStats stats{};
+    for (ULONG s = 0; s < nbSegments; ++s) {
+        D3DKMT_QUERYSTATISTICS sq{};
+        sq.Type = D3DKMT_QUERYSTATISTICS_SEGMENT;
+        sq.AdapterLuid = adapterLuid;
+        sq.QuerySegment.SegmentId = s;
+
+        if (pfn(&sq) == 0) {
+            const auto& segInfo = sq.QueryResult.SegmentInformation;
+            if (segInfo.Aperture) {
+                stats.sharedBytesResident += segInfo.BytesResident;
+                stats.sharedCommitLimit += segInfo.CommitLimit;
+            } else {
+                stats.dedicatedBytesResident += segInfo.BytesResident;
+                stats.dedicatedCommitLimit += segInfo.CommitLimit;
+            }
+        }
+    }
+
+    stats.totalBytesResident = stats.dedicatedBytesResident + stats.sharedBytesResident;
+    return stats;
+}
+
 } // namespace BareStats

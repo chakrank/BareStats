@@ -8,6 +8,14 @@
 
 namespace BareStats {
 
+struct D3dKmtMemoryStats {
+    uint64_t dedicatedBytesResident = 0;
+    uint64_t sharedBytesResident = 0;
+    uint64_t totalBytesResident = 0;
+    uint64_t dedicatedCommitLimit = 0;
+    uint64_t sharedCommitLimit = 0;
+};
+
 class D3dKmtCollector {
 public:
     D3dKmtCollector();
@@ -15,6 +23,7 @@ public:
 
     bool IsAvailable() const;
     std::optional<double> QueryEngineUtilization(const LUID& adapterLuid);
+    std::optional<D3dKmtMemoryStats> QueryMemoryUsage(const LUID& adapterLuid);
     void Reset();
 
 private:

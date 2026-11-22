@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(BareStats VERSION 1.3.0 LANGUAGES CXX)
+project(BareStats VERSION 1.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,9 +15,10 @@ if (APPLE)
 endif()
 
 if (WIN32)
-    add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX)
+    add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 
     if (MSVC)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
         add_compile_options(/W4 /utf-8 /permissive- /Zc:__cplusplus)
         add_compile_options("$<$<CONFIG:Release>:/O2;/Oi;/Gy>")
         add_link_options("$<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>")
@@ -31,23 +32,48 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/config
     ${CMAKE_CURRENT_SOURCE_DIR}/src/metrics
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/metrics/llm
     ${CMAKE_CURRENT_SOURCE_DIR}/src/overlay
     ${CMAKE_CURRENT_SOURCE_DIR}/src/util
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/util/crypto
 )
 
 set(COMMON_SOURCES
     src/metrics/gpu_collector.cpp
     src/metrics/nvml_collector.cpp
     src/metrics/telemetry_engine.cpp
+    src/metrics/llm/llm_collector.cpp
+    src/metrics/llm/llm_resolver.cpp
+    src/metrics/network/udp_streamer.cpp
+    src/overlay/layout_engine.cpp
     src/config/config.cpp
+    src/config/service_installer.cpp
     src/config/config_watcher.cpp
     src/config/ini_parser.cpp
     src/util/formatter.cpp
+    src/util/http_client.cpp
+    src/util/os_utils.cpp
+    src/util/crypto/monocypher.c
+    src/util/crypto/crypto_box.cpp
+    src/util/logger.cpp
     src/overlay/monitor_helper.cpp
+)
+
+set_source_files_properties(
+    src/util/crypto/monocypher.c
+    PROPERTIES LANGUAGE CXX
 )
 
 set(COMMON_HEADERS
     src/metrics/metrics.h
+    src/metrics/wire_protocol.h
+    src/metrics/network/udp_streamer.h
+    src/metrics/llm/llm_collector.h
+    src/metrics/llm/model_name_condenser.h
+    src/metrics/llm/llm_resolver.h
+    src/metrics/llm/llm_seqlock.h
+    src/overlay/layout_engine.h
+    src/overlay/island_window_manager.h
     src/metrics/cpu_collector.h
     src/metrics/memory_collector.h
     src/metrics/network_collector.h
@@ -55,10 +81,18 @@ set(COMMON_HEADERS
     src/metrics/nvml_collector.h
     src/metrics/telemetry_engine.h
     src/config/config.h
+    src/config/app_mode.h
+    src/config/service_installer.h
     src/config/config_watcher.h
     src/config/ini_parser.h
     src/util/formatter.h
     src/util/geometry.h
+    src/util/http_client.h
+    src/util/json_mini.h
+    src/util/os_utils.h
+    src/util/crypto/monocypher.h
+    src/util/crypto/crypto_box.h
+    src/util/logger.h
     src/overlay/monitor_helper.h
 )
 
@@ -101,6 +135,7 @@ if (WIN32)
         powrprof
         iphlpapi
         ws2_32
+        bcrypt
     )
 elseif (APPLE)
     include_directories(
@@ -162,6 +197,7 @@ elseif (APPLE)
         "-framework CoreFoundation"
         pthread
     )
+    target_compile_options(BareStats PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
 
     set_target_properties(BareStats PROPERTIES
         OUTPUT_NAME "BareStats"
@@ -181,12 +217,14 @@ else()
         src/metrics/linux/linux_proc_collector.cpp
         src/metrics/linux/linux_sysfs_gpu_collector.cpp
         src/overlay/linux/linux_overlay.cpp
+        src/overlay/linux/gui_subsystem_linux.cpp
     )
 
     set(PLATFORM_HEADERS
         src/metrics/linux/linux_proc_collector.h
         src/metrics/linux/linux_sysfs_gpu_collector.h
         src/overlay/linux/linux_overlay.h
+        src/overlay/linux/gui_subsystem_linux.h
     )
 
     find_package(PkgConfig QUIET)
@@ -257,6 +295,13 @@ if (BARESTATS_BUILD_TESTS)
         tests/test_formatters.cpp
         tests/test_overlay.cpp
         tests/test_metrics_common.cpp
+        tests/test_crypto_wire.cpp
+        tests/test_llm_collector.cpp
+        tests/test_model_name_condenser.cpp
+        tests/test_layout_resolver.cpp
+        tests/test_single_binary.cpp
+        tests/test_udp_service.cpp
+        tests/test_seqlock.cpp
         ${COMMON_SOURCES}
     )
 
@@ -274,6 +319,7 @@ if (BARESTATS_BUILD_TESTS)
             src/metrics/linux/linux_proc_collector.cpp
             src/metrics/linux/linux_sysfs_gpu_collector.cpp
             src/overlay/linux/linux_overlay.cpp
+            src/overlay/linux/gui_subsystem_linux.cpp
         )
     elseif (APPLE)
         list(APPEND TEST_SOURCES
@@ -287,6 +333,7 @@ if (BARESTATS_BUILD_TESTS)
             src/metrics/linux/linux_proc_collector.cpp
             src/metrics/linux/linux_sysfs_gpu_collector.cpp
             src/overlay/linux/linux_overlay.cpp
+            src/overlay/linux/gui_subsystem_linux.cpp
         )
         set_source_files_properties(
             src/metrics/macos/macos_gpu_collector.mm
@@ -303,10 +350,12 @@ if (BARESTATS_BUILD_TESTS)
             src/metrics/linux/linux_proc_collector.cpp
             src/metrics/linux/linux_sysfs_gpu_collector.cpp
             src/overlay/linux/linux_overlay.cpp
+            src/overlay/linux/gui_subsystem_linux.cpp
         )
     endif()
 
     add_executable(BareStatsTests ${TEST_SOURCES})
+    target_compile_definitions(BareStatsTests PRIVATE BARESTATS_ENABLE_TEST_MOCKS)
 
     if (WIN32)
         target_link_libraries(BareStatsTests PRIVATE
@@ -319,6 +368,7 @@ if (BARESTATS_BUILD_TESTS)
             powrprof
             iphlpapi
             ws2_32
+            bcrypt
         )
         add_dependencies(BareStatsTests mock_nvml mock_atiadlxx mock_ControlLib)
     elseif (APPLE)
@@ -332,6 +382,7 @@ if (BARESTATS_BUILD_TESTS)
             pthread
             dl
         )
+        target_compile_options(BareStatsTests PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
         add_dependencies(BareStatsTests mock_nvml)
     else()
         target_link_libraries(BareStatsTests PRIVATE
@@ -372,21 +423,16 @@ elseif (UNIX)
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
     )
 
-    install(FILES resources/linux/barestats.desktop
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
-        RENAME io.github.chakrank.barestats.desktop
-    )
-
-    install(FILES resources/linux/barestats.svg
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
+    install(DIRECTORY resources/linux/icons/hicolor/
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor
     )
 
     install(FILES resources/linux/barestats.png
         DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps
     )
 
-    install(FILES resources/linux/barestats.png
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps
+    install(FILES resources/linux/io.github.chakrank.barestats.png
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps
     )
 
     install(FILES resources/linux/io.github.chakrank.barestats.metainfo.xml
@@ -401,6 +447,13 @@ elseif (UNIX)
         DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/barestats
         RENAME copyright
     )
+
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/changelog.gz")
+        install(FILES packaging/debian/changelog.gz
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/barestats
+            RENAME changelog.Debian.gz
+        )
+    endif()
 else()
     install(TARGETS BareStats
         RUNTIME DESTINATION .
@@ -423,7 +476,7 @@ endif()
 
 set(CPACK_PACKAGE_NAME "barestats")
 set(CPACK_PACKAGE_VENDOR "Chakrank")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "BareStats - Ultra-lightweight native telemetry overlay")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Ultra-lightweight native telemetry overlay")
 set(CPACK_PACKAGE_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
 set(CPACK_PACKAGE_VERSION_MINOR ${PROJECT_VERSION_MINOR})
 set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
@@ -432,24 +485,27 @@ set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/chakrank/BareStats")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 
 # Debian / Ubuntu packaging (.deb)
-set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Chakrank <chakrank@hotmail.com>")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Chakrank <chakrank@outlook.com>")
 set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
-set(CPACK_DEBIAN_PACKAGE_DESCRIPTION "BareStats - Ultra-lightweight native telemetry overlay\n BareStats is an unprivileged, ultra-lightweight telemetry overlay delivering\n real-time CPU, GPU, VRAM, RAM, and network throughput at 0.00% idle duty cycle.\n Developed by Chakrank.")
+set(CPACK_DEBIAN_PACKAGE_DESCRIPTION "BareStats is an unprivileged, ultra-lightweight telemetry overlay delivering\n real-time CPU, GPU, VRAM, RAM, and network throughput at 0.00% idle duty cycle.\n .\n Features include dynamic multi-GPU auto-targeting, custom 2D matrix grids,\n distributed AI inference monitoring, and zero-overhead hardware polling.\n .\n Developed by Chakrank.")
 set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
-    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postinst;${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postrm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postinst;${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postrm;${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/prerm"
 )
 set(CPACK_DEBIAN_FILE_NAME "DEB-DEFAULT")
 
 # Fedora / RHEL / openSUSE packaging (.rpm)
-set(CPACK_RPM_PACKAGE_SUMMARY "BareStats - Ultra-lightweight native telemetry overlay")
+set(CPACK_RPM_PACKAGE_SUMMARY "Ultra-lightweight native telemetry overlay")
 set(CPACK_RPM_PACKAGE_VENDOR "Chakrank")
 set(CPACK_RPM_PACKAGE_URL "https://github.com/chakrank/BareStats")
 set(CPACK_RPM_PACKAGE_LICENSE "MIT")
 set(CPACK_RPM_PACKAGE_GROUP "Applications/System")
 set(CPACK_RPM_PACKAGE_AUTOREQPROV ON)
 set(CPACK_RPM_PACKAGE_DESCRIPTION "BareStats is an unprivileged, ultra-lightweight telemetry overlay delivering\nreal-time CPU, GPU, VRAM, RAM, and network throughput at 0.00% idle duty cycle.\nEngineered for local AI/ML workloads, competitive gaming, and workstation productivity.\nDeveloped by Chakrank.")
+set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/rpm/postinst")
+set(CPACK_RPM_PRE_UNINSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/rpm/preun")
+set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/rpm/postrm")
 set(CPACK_RPM_FILE_NAME "RPM-DEFAULT")
 
 # Universal portable archives (.tar.gz and .zip)

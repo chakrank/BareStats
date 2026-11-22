@@ -112,6 +112,78 @@ bool Test_LinuxProc_NetworkCollector_Synthetic() {
     return true;
 }
 
+// AUDIT-P5-01: Interface switch transition reset (no multi-GB spike) and dynamic gateway re-evaluation
+bool Test_LinuxProc_NetworkInterfaceSwitchAndGatewayReevaluation() {
+    std::string devPath = GetTestModuleDir() + "test_proc_net_dev_switch";
+    std::string routePath = GetTestModuleDir() + "test_proc_net_route_switch";
+    std::error_code ec;
+
+    // 1. Initial state: eth0 is default gateway
+    {
+        std::ofstream out(routePath);
+        out << "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+            << "eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n";
+    }
+    {
+        std::ofstream out(devPath);
+        out << "Inter-|   Receive                                                |  Transmit\n"
+            << " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n"
+            << "  eth0: 100000000     0    0    0    0     0          0         0 20000000      0    0    0     0       0          0\n"
+            << " wlan0: 50000000000   0    0    0    0     0          0         0 10000000000   0    0    0     0       0          0\n";
+    }
+
+    BareStats::LinuxProcNetworkCollector collector(devPath, routePath);
+    auto m1 = collector.Collect();
+    TEST_ASSERT(m1.isAvailable, "Network metrics must be available");
+    TEST_ASSERT(m1.primaryAdapterName == "eth0", "Initial adapter must be eth0");
+    TEST_ASSERT(m1.totalRxBytes == 100000000ULL, "Initial totalRxBytes must match eth0");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // 2. Gateway switches to wlan0 while eth0 has 0 delta traffic
+    {
+        std::ofstream out(routePath);
+        out << "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+            << "wlan0\t00000000\t0101A8C0\t0003\t0\t0\t50\t00000000\t0\t0\t0\n"
+            << "eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n";
+    }
+    {
+        std::ofstream out(devPath);
+        out << "Inter-|   Receive                                                |  Transmit\n"
+            << " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n"
+            << "  eth0: 100000000     0    0    0    0     0          0         0 20000000      0    0    0     0       0          0\n"
+            << " wlan0: 50000000000   0    0    0    0     0          0         0 10000000000   0    0    0     0       0          0\n";
+    }
+
+    auto m2 = collector.Collect();
+    TEST_ASSERT(m2.primaryAdapterName == "wlan0", "Re-evaluated gateway must switch to wlan0");
+    TEST_ASSERT(m2.rxBytesPerSec == 0, "Transition tick from eth0 to wlan0 must output 0 B/s (no false multi-GB spike)");
+    TEST_ASSERT(m2.txBytesPerSec == 0, "Transition tick must output 0 B/s TX");
+    TEST_ASSERT(m2.totalRxBytes == 50000000000ULL, "Total RX bytes updated to wlan0 baseline");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // 3. Normal traffic on wlan0 after transition
+    {
+        std::ofstream out(devPath);
+        out << "Inter-|   Receive                                                |  Transmit\n"
+            << " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n"
+            << "  eth0: 100000000     0    0    0    0     0          0         0 20000000      0    0    0     0       0          0\n"
+            << " wlan0: 50010000000   0    0    0    0     0          0         0 10005000000   0    0    0     0       0          0\n";
+    }
+
+    auto m3 = collector.Collect();
+    TEST_ASSERT(m3.primaryAdapterName == "wlan0", "Primary adapter must remain wlan0");
+    TEST_ASSERT(m3.rxBytesPerSec > 0, "Throughput delta must be computed normally after transition");
+    TEST_ASSERT(m3.txBytesPerSec > 0, "TX Throughput delta must be computed normally");
+    // Verify delta is around 10MB / dt, NOT 50GB!
+    TEST_ASSERT(m3.rxBytesPerSec < 500000000ULL, "Throughput must not reflect full interface total bytes");
+
+    std::filesystem::remove(routePath, ec);
+    std::filesystem::remove(devPath, ec);
+    return true;
+}
+
 // 4. Linux Sysfs AMD Radeon GPU Collector Synthetic Parsing
 bool Test_LinuxSysfs_AmdGpu_Synthetic() {
     std::string mockDrm = GetTestModuleDir() + "mock_sysfs_drm_amd";

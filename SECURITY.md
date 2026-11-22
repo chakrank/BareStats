@@ -18,7 +18,7 @@ If you believe you have discovered a security vulnerability or anti-cheat confli
 1. **Do not disclose the issue publicly.** Please refrain from opening a public GitHub issue for sensitive security vulnerabilities.
 2. **Private Disclosure Channels:**
    - **GitHub Security Advisories (Recommended):** Use the [Report a Vulnerability](https://github.com/chakrank/BareStats/security/advisories/new) tab on the GitHub repository.
-   - **Direct Email:** Alternatively, send an email to **chakrank@hotmail.com** with the subject line `[SECURITY] BareStats Vulnerability Report`.
+   - **Direct Email:** Alternatively, send an email to **chakrank@outlook.com** with the subject line `[SECURITY] BareStats Vulnerability Report`.
 3. **Information to Include:**
    - A description of the vulnerability and its potential impact.
    - Exact steps or minimal proof-of-concept to reproduce the behavior.

@@ -1,0 +1,4 @@
+#!/bin/sh
+if [ $1 -eq 0 ]; then
+    killall -q barestats 2>/dev/null || pkill -x barestats 2>/dev/null || true
+fi

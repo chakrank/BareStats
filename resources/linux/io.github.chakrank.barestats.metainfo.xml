@@ -4,15 +4,13 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <name>BareStats</name>
-  <summary>BareStats - Ultra-lightweight native telemetry overlay</summary>
+  <summary>Ultra-lightweight native telemetry overlay</summary>
   <developer id="io.github.chakrank">
     <name>Chakrank</name>
   </developer>
   <description>
     <p>
-      BareStats is an ultra-lightweight, hardware-accelerated system telemetry overlay for Linux and Windows.
-      It delivers real-time CPU, GPU, VRAM, RAM, and network throughput at 0.00% idle duty cycle.
-      Developed by Chakrank.
+      BareStats is an unprivileged, ultra-lightweight, hardware-accelerated telemetry overlay delivering real-time CPU, GPU, VRAM, RAM, and network throughput at 0.00% idle duty cycle. Developed by Chakrank.
     </p>
   </description>
   <icon type="stock">barestats</icon>
@@ -22,11 +20,17 @@
     <category>System</category>
     <category>Monitor</category>
   </categories>
-  <launchable type="desktop-id">io.github.chakrank.barestats.desktop</launchable>
+  <launchable type="desktop-id">barestats.desktop</launchable>
   <provides>
     <binary>barestats</binary>
+    <id>barestats.desktop</id>
   </provides>
   <releases>
+    <release version="1.4.0" date="2026-11-10">
+      <description>
+        <p>Universal multi-GPU auto-targeting, unified horizontal status ribbon and matrix grid layouts, case-insensitive telemetry aliases, and smart configuration auto-bridging.</p>
+      </description>
+    </release>
     <release version="1.3.0" date="2026-10-17">
       <description>
         <p>Dynamic Multi-GPU auto-targeting, Islands matrix grid positioning, and Wayland compatibility.</p>

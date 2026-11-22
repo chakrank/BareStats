@@ -10,6 +10,7 @@
 #include <memory>
 #include <functional>
 #include <atomic>
+#include <mutex>
 
 namespace BareStats {
 
@@ -60,6 +61,8 @@ public:
     void Stop();
     void PollEvents();
 
+    void ExportSatelliteConfiguration();
+
     // Async-signal safe requests (called from signal handlers)
     static void RequestStop();
     static void RequestToggleVisibility();
@@ -96,6 +99,11 @@ private:
     std::function<void()> onTelemetryReady_;
     std::function<void()> onConfigReload_;
     std::atomic<bool> isRunning_{false};
+
+    std::mutex pendingMetricsMutex_;
+    SystemMetrics pendingMetrics_{};
+    std::atomic<bool> hasPendingMetrics_{false};
+    std::atomic<bool> pendingLaunchAnimation_{false};
 
     std::unique_ptr<LinuxTray> tray_;
     void SetupTray();

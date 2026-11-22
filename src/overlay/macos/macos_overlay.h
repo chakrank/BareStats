@@ -52,6 +52,8 @@ public:
     void Stop();
     void PollEvents();
 
+    void ExportSatelliteConfiguration();
+
     // Async-safe static triggers
     static void RequestStop();
     static void RequestToggleVisibility();

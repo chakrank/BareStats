@@ -58,8 +58,8 @@ jobs:
           path: |
             build/BareStats.exe
             build/BareStats.exe.sha256
-            build/BareStats-v1.3.0-Windows-x64.zip
-            build/BareStats-v1.3.0-Windows-x64.zip.sha256
+            build/BareStats-v1.4.0-Windows-x64.zip
+            build/BareStats-v1.4.0-Windows-x64.zip.sha256
           if-no-files-found: error
 
   build-linux-packages:
@@ -233,9 +233,18 @@ jobs:
         run: |
           mkdir -p macos-artifacts
           cp -f build/*.dmg macos-artifacts/ || true
-          tar -czf macos-artifacts/BareStats-macOS-Universal.app.tar.gz -C build BareStats.app
+          if ls build/barestats-*-macOS.dmg 1>/dev/null 2>&1; then
+            cp -f build/barestats-*-macOS.dmg macos-artifacts/barestats-1.4.0-macOS.dmg
+          fi
+          tar -czf macos-artifacts/barestats-1.4.0-macOS.tar.gz -C build BareStats.app
+          cp -f macos-artifacts/barestats-1.4.0-macOS.tar.gz macos-artifacts/BareStats-macOS-Universal.app.tar.gz
           cd macos-artifacts
-          shasum -a 256 * > SHA256SUMS.txt
+          for f in *; do
+            if [ -f "$f" ] && [[ "$f" != *.sha256 ]] && [[ "$f" != SHA256SUMS* ]]; then
+              shasum -a 256 "$f" | awk '{print $1}' > "${f}.sha256"
+            fi
+          done
+          shasum -a 256 $(ls -1 | grep -v '\.sha256$' | grep -v '^SHA256SUMS') > SHA256SUMS.txt
           cp SHA256SUMS.txt SHA256SUMS
 
       - name: Upload macOS Artifacts

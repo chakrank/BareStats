@@ -18,6 +18,7 @@ public:
 
     bool HasSection(const std::string& section) const;
     bool HasKey(const std::string& section, const std::string& key) const;
+    bool RemoveKey(const std::string& section, const std::string& key);
 
     std::string GetString(const std::string& section, const std::string& key, const std::string& defaultVal = "") const;
     int GetInt(const std::string& section, const std::string& key, int defaultVal = 0) const;

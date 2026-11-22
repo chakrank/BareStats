@@ -11,6 +11,7 @@ struct LinuxTrayCallbacks {
     std::function<void()> onResetPosition;
     std::function<void()> onToggleVisibility;
     std::function<void()> onReloadConfig;
+    std::function<void()> onExportSatellite;
     std::function<void()> onExit;
 };
 
@@ -22,6 +23,8 @@ public:
     void Poll() {}
     void Shutdown() {}
     bool IsActive() const { return false; }
+    void PopupMenu() {}
+    void ShowDialog(const std::string&, const std::string&, bool = false) {}
 };
 
 } // namespace BareStats
@@ -36,6 +39,7 @@ public:
 #include <filesystem>
 #include <dlfcn.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 namespace BareStats {
 
@@ -45,6 +49,7 @@ struct LinuxTrayCallbacks {
     std::function<void()> onResetPosition;
     std::function<void()> onToggleVisibility;
     std::function<void()> onReloadConfig;
+    std::function<void()> onExportSatellite;
     std::function<void()> onExit;
 };
 
@@ -135,6 +140,7 @@ public:
         AddMenuItem("Reset to Bottom-Center", &callbacks_.onResetPosition);
         AddMenuItem("Toggle Overlay (Hide/Show)", &callbacks_.onToggleVisibility);
         AddMenuItem("Reload Configuration", &callbacks_.onReloadConfig);
+        AddMenuItem("Export satellite.ini (for Remote Rig)...", &callbacks_.onExportSatellite);
         AddSeparator();
         AddMenuItem("Exit BareStats", &callbacks_.onExit);
 
@@ -163,6 +169,44 @@ public:
     }
 
     bool IsActive() const { return isActive_; }
+
+    void PopupMenu() {
+        if (!isActive_ || !menu_ || !gtkLib_) return;
+        typedef void (*FnGtkMenuPopupAtPointer)(void*, void*);
+        typedef void (*FnGtkMenuPopup)(void*, void*, void*, void*, void*, unsigned int, unsigned int);
+        auto fnPopupAtPointer = reinterpret_cast<FnGtkMenuPopupAtPointer>(dlsym(gtkLib_, "gtk_menu_popup_at_pointer"));
+        if (fnPopupAtPointer) {
+            fnPopupAtPointer(menu_, nullptr);
+        } else {
+            auto fnPopup = reinterpret_cast<FnGtkMenuPopup>(dlsym(gtkLib_, "gtk_menu_popup"));
+            if (fnPopup) {
+                fnPopup(menu_, nullptr, nullptr, nullptr, nullptr, 3, 0);
+            }
+        }
+    }
+
+    void ShowDialog(const std::string& title, const std::string& message, bool isError = false) {
+        if (!gtkLib_) return;
+        typedef void* (*FnGtkMessageDialogNew)(void*, int, int, int, const char*, ...);
+        typedef int (*FnGtkDialogRun)(void*);
+        typedef void (*FnGtkWidgetDestroy)(void*);
+        typedef void (*FnGtkWindowTitle)(void*, const char*);
+
+        auto fnNew = reinterpret_cast<FnGtkMessageDialogNew>(dlsym(gtkLib_, "gtk_message_dialog_new"));
+        auto fnRun = reinterpret_cast<FnGtkDialogRun>(dlsym(gtkLib_, "gtk_dialog_run"));
+        auto fnDestroy = reinterpret_cast<FnGtkWidgetDestroy>(dlsym(gtkLib_, "gtk_widget_destroy"));
+        auto fnSetTitle = reinterpret_cast<FnGtkWindowTitle>(dlsym(gtkLib_, "gtk_window_set_title"));
+
+        if (fnNew && fnRun && fnDestroy) {
+            // 1 = GTK_MESSAGE_INFO, 3 = GTK_MESSAGE_ERROR, 1 = GTK_BUTTONS_OK
+            void* dlg = fnNew(nullptr, 0, isError ? 3 : 1, 1, "%s", message.c_str());
+            if (dlg) {
+                if (fnSetTitle) fnSetTitle(dlg, title.c_str());
+                fnRun(dlg);
+                fnDestroy(dlg);
+            }
+        }
+    }
 
 private:
     typedef int (*FnGtkInitCheck)(int*, char***);
@@ -239,12 +283,13 @@ private:
             if (home && home[0] != '\0') {
                 cacheDir = std::string(home) + "/.cache/barestats/icons";
             } else {
-                cacheDir = "/tmp/barestats_icons";
+                cacheDir = "/tmp/barestats_icons_" + std::to_string(geteuid());
             }
         }
 
         std::error_code ec;
         std::filesystem::create_directories(cacheDir, ec);
+        chmod(cacheDir.c_str(), 0700);
         std::string fallbackIconPath = cacheDir + "/barestats.png";
         if (access(fallbackIconPath.c_str(), R_OK) != 0) {
             std::ofstream out(fallbackIconPath, std::ios::binary | std::ios::trunc);

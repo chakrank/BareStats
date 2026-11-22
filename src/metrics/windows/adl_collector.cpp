@@ -27,14 +27,17 @@ bool AdlCollector::LoadAdl(const char* customDllPath) {
     if (!customDllPath_.empty()) {
         adlDll_ = LoadLibraryA(customDllPath_.c_str());
     } else {
+#ifdef BARESTATS_ENABLE_TEST_MOCKS
         char envBuf[MAX_PATH];
         DWORD len = GetEnvironmentVariableA("BARESTATS_MOCK_ADL_DLL", envBuf, MAX_PATH);
         if (len > 0 && len < MAX_PATH) {
             adlDll_ = LoadLibraryA(envBuf);
-        } else {
-            adlDll_ = LoadLibraryA("atiadlxx.dll");
+        } else
+#endif
+        {
+            adlDll_ = LoadLibraryExA("atiadlxx.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
             if (!adlDll_) {
-                adlDll_ = LoadLibraryA("atiadlxy.dll");
+                adlDll_ = LoadLibraryExA("atiadlxy.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
             }
         }
     }

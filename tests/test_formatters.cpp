@@ -42,6 +42,46 @@ bool Test_PrecisionVram_FormattingMath() {
     TEST_ASSERT(sUsable.find("15.6GB") != std::string::npos,
                 "Usable mode must report net allocatable capacity (15.6 GB)");
 
+    // Test iGPU UMA shared memory reporting
+    BareStats::GpuMetrics igpu{};
+    igpu.isAvailable = true;
+    igpu.isIntegrated = true;
+    igpu.dedicatedVideoMemoryBytes = 128ULL * 1024 * 1024;     // 128 MB BIOS slice
+    igpu.sharedSystemMemoryBytes = 3788ULL * 1024 * 1024;      // ~3.7 GB shared pool
+    igpu.name = "Intel UHD Graphics";
+    igpu.utilizationPercent = 15.0;
+    igpu.memoryTotalBytes = (128ULL + 3788ULL) * 1024 * 1024; // ~3.8 GB combined
+    igpu.memoryUsedBytes = 35ULL * 1024 * 1024;               // 35 MB used (within BIOS)
+
+    BareStats::SystemMetrics sysIgpu{};
+    sysIgpu.gpu = igpu;
+    sysIgpu.gpus.push_back(igpu);
+
+    // 1. Default mode: Usage only, within BIOS slice -> "0.1GB" without [S]
+    std::string sIgpu = BareStats::Formatter::FormatUtf8(sysIgpu, &cfgPhysical);
+    TEST_ASSERT(sIgpu.find("0.1GB") != std::string::npos, "Non-zero iGPU usage must format as minimum 0.1GB");
+    TEST_ASSERT(sIgpu.find("[S]") == std::string::npos, "Usage within BIOS threshold must not show [S]");
+
+    // 2. Usage exceeding BIOS slice (e.g. 400 MB / 0.4 GB) -> "0.4GB [S]"
+    sysIgpu.gpu.memoryUsedBytes = 400ULL * 1024 * 1024;
+    sysIgpu.gpus[0].memoryUsedBytes = 400ULL * 1024 * 1024;
+    std::string sIgpuSpill = BareStats::Formatter::FormatUtf8(sysIgpu, &cfgPhysical);
+    TEST_ASSERT(sIgpuSpill.find("0.4GB [S]") != std::string::npos, "Usage exceeding BIOS threshold must append [S]");
+    TEST_ASSERT(sIgpuSpill.find("/3.8GB") == std::string::npos, "Usage-only mode must not display misleading total capacity");
+
+    // 3. Shared pool mode: "0.4/3.8GB [S]"
+    BareStats::AppConfig cfgShared = cfgPhysical;
+    cfgShared.igpuVramMode = BareStats::IgpuVramMode::Shared;
+    std::string sIgpuShared = BareStats::Formatter::FormatUtf8(sysIgpu, &cfgShared);
+    TEST_ASSERT(sIgpuShared.find("0.4/") != std::string::npos, "Shared mode must report usage against total");
+    TEST_ASSERT(sIgpuShared.find("[S]") != std::string::npos, "Shared mode exceeding BIOS must append [S]");
+
+    // 4. Verify dedicated GPU is completely unaffected
+    std::string sDgpu = BareStats::Formatter::FormatUtf8(sys, &cfgShared);
+    TEST_ASSERT(sDgpu.find("16.0GB") != std::string::npos || sDgpu.find("16GB") != std::string::npos,
+                "Dedicated GPU must be completely unaffected by iGPU settings");
+    TEST_ASSERT(sDgpu.find("[S]") == std::string::npos, "Dedicated GPU must never show [S]");
+
     return true;
 }
 
@@ -212,6 +252,40 @@ bool Test_FormatCell_ModularWidgetsAndSubStats() {
     // NET
     auto netSegs = BareStats::Formatter::FormatCell("net", sys, &cfg);
     TEST_ASSERT(!netSegs.empty(), "FormatCell(net) must return segments");
+
+    // Remote Satellite Hardware Tokens
+    BareStats::RigNodeSnapshot remoteRig{};
+    std::strncpy(remoteRig.rig_id, "rig1", sizeof(remoteRig.rig_id) - 1);
+    remoteRig.cpu_load_pct = 42;
+    remoteRig.ram_used_mb = 6400;
+    remoteRig.ram_total_mb = 16384;
+    remoteRig.gpu_count = 1;
+    remoteRig.gpus[0].utilization_pct = 88;
+    remoteRig.gpus[0].vram_used_mb = 12000;
+    remoteRig.gpus[0].vram_total_mb = 16384;
+    remoteRig.gpus[0].temp_c = 71;
+    remoteRig.gpus[0].power_w = 250;
+    remoteRig.snapshot.is_online = true;
+
+    sys.cluster.rig_count = 1;
+    sys.cluster.rigs[0] = remoteRig;
+
+    auto rCpu = BareStats::Formatter::FormatCell("rig1:cpu", sys, &cfg);
+    TEST_ASSERT(!rCpu.empty(), "FormatCell(rig1:cpu) must return segments");
+    bool foundRigCpu = false;
+    for (const auto& s : rCpu) {
+        if (s.text.find(L"42") != std::wstring::npos) foundRigCpu = true;
+    }
+    TEST_ASSERT(foundRigCpu, "FormatCell(rig1:cpu) must contain utilization");
+
+    auto rRam = BareStats::Formatter::FormatCell("rig1:ram", sys, &cfg);
+    TEST_ASSERT(!rRam.empty(), "FormatCell(rig1:ram) must return segments");
+
+    auto rGpu = BareStats::Formatter::FormatCell("rig1:gpu", sys, &cfg);
+    TEST_ASSERT(!rGpu.empty(), "FormatCell(rig1:gpu) must return segments");
+
+    auto rGpuTemp = BareStats::Formatter::FormatCell("rig1:gpu0_temp", sys, &cfg);
+    TEST_ASSERT(!rGpuTemp.empty(), "FormatCell(rig1:gpu0_temp) must return segments");
 
     // Test FormatRows with CustomGrid layout produces rows matching grid height
     cfg.layout = BareStats::OverlayLayout::CustomGrid;

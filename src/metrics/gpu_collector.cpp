@@ -100,45 +100,74 @@ static GpuMetrics CollectFromAdapter(const InternalAdapter& target, NvmlCollecto
         }
     }
 
-    // 2. Universal DXGI Pipeline (Base VRAM accounting for all GPUs)
+    // 2. Universal DXGI & D3DKMT Pipeline (Base VRAM accounting for all GPUs)
     metrics.isAvailable = true;
     metrics.name = WideToUtf8(target.desc.Description);
+    metrics.dedicatedVideoMemoryBytes = target.desc.DedicatedVideoMemory;
+    metrics.sharedSystemMemoryBytes = target.desc.SharedSystemMemory;
+    metrics.isIntegrated = (target.desc.DedicatedVideoMemory <= 512 * 1024 * 1024);
 
-    ComPtr<IDXGIAdapter3> adapter3;
-    if (SUCCEEDED(target.adapter.As(&adapter3))) {
-        DXGI_QUERY_VIDEO_MEMORY_INFO localMem{};
-        if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &localMem))) {
-            metrics.memoryUsedBytes = localMem.CurrentUsage;
-            metrics.memoryTotalBytes = (target.desc.DedicatedVideoMemory > 0)
-                ? target.desc.DedicatedVideoMemory
-                : localMem.Budget;
-            if (target.desc.DedicatedVideoMemory > localMem.Budget && localMem.Budget > 0) {
-                metrics.memoryReservedBytes = target.desc.DedicatedVideoMemory - localMem.Budget;
-            }
+    // Query system-wide memory from D3DKMT kernel driver (Task Manager parity across all running processes)
+    auto kmtMem = d3dKmtCollector.QueryMemoryUsage(target.desc.AdapterLuid);
+
+    if (metrics.isIntegrated) {
+        // Integrated graphics (Intel UHD / Iris, AMD APU):
+        // System-wide active memory is the sum of all resident GPU segments
+        if (kmtMem.has_value() && kmtMem->totalBytesResident > 0) {
+            metrics.memoryUsedBytes = kmtMem->totalBytesResident;
         }
 
-        // On integrated graphics (Intel UHD / Iris, AMD APU), dedicated VRAM may be minimal or 0
-        // with workloads backed by non-local shared system memory.
-        if (target.desc.DedicatedVideoMemory <= 512 * 1024 * 1024) {
-            DXGI_QUERY_VIDEO_MEMORY_INFO nonLocalMem{};
-            if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocalMem))) {
-                if (nonLocalMem.CurrentUsage > 0 && metrics.memoryUsedBytes == 0) {
-                    metrics.memoryUsedBytes = nonLocalMem.CurrentUsage;
+        // Available memory pool for iGPU (BIOS dedicated slice + shared system memory)
+        uint64_t sharedCapacity = (target.desc.SharedSystemMemory > 0)
+            ? target.desc.SharedSystemMemory
+            : (kmtMem.has_value() ? kmtMem->sharedCommitLimit : 0);
+
+        metrics.memoryTotalBytes = target.desc.DedicatedVideoMemory + sharedCapacity;
+        if (kmtMem.has_value() && kmtMem->sharedCommitLimit > 0 && sharedCapacity > kmtMem->sharedCommitLimit) {
+            metrics.memoryReservedBytes = sharedCapacity - kmtMem->sharedCommitLimit;
+        }
+    } else {
+        // Dedicated graphics (NVIDIA, AMD dGPU, Intel Arc dGPU):
+        // STRICTLY preserve dedicated hardware VRAM! Never touch or report shared memory.
+        if (kmtMem.has_value() && kmtMem->dedicatedBytesResident > 0) {
+            metrics.memoryUsedBytes = kmtMem->dedicatedBytesResident;
+        }
+        metrics.memoryTotalBytes = target.desc.DedicatedVideoMemory;
+        if (kmtMem.has_value() && kmtMem->dedicatedCommitLimit > 0 && target.desc.DedicatedVideoMemory > kmtMem->dedicatedCommitLimit) {
+            metrics.memoryReservedBytes = target.desc.DedicatedVideoMemory - kmtMem->dedicatedCommitLimit;
+        }
+    }
+
+    // DXGI fallback for any values not retrieved by D3DKMT
+    if (metrics.memoryUsedBytes == 0 || metrics.memoryTotalBytes == 0) {
+        ComPtr<IDXGIAdapter3> adapter3;
+        if (SUCCEEDED(target.adapter.As(&adapter3))) {
+            DXGI_QUERY_VIDEO_MEMORY_INFO localMem{};
+            if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &localMem))) {
+                if (metrics.memoryUsedBytes == 0) metrics.memoryUsedBytes = localMem.CurrentUsage;
+                if (metrics.memoryTotalBytes == 0) {
+                    metrics.memoryTotalBytes = (target.desc.DedicatedVideoMemory > 0)
+                        ? target.desc.DedicatedVideoMemory
+                        : localMem.Budget;
                 }
-                if (metrics.memoryTotalBytes == 0 || metrics.memoryTotalBytes <= 512 * 1024 * 1024) {
-                    if (nonLocalMem.Budget > 0) {
-                        metrics.memoryTotalBytes = (target.desc.SharedSystemMemory > 0)
-                            ? target.desc.SharedSystemMemory
-                            : nonLocalMem.Budget;
-                        if (target.desc.SharedSystemMemory > nonLocalMem.Budget && nonLocalMem.Budget > 0) {
-                            metrics.memoryReservedBytes = target.desc.SharedSystemMemory - nonLocalMem.Budget;
-                        }
+            }
+            if (metrics.isIntegrated) {
+                DXGI_QUERY_VIDEO_MEMORY_INFO nonLocalMem{};
+                if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocalMem))) {
+                    if (metrics.memoryUsedBytes == 0 || metrics.memoryUsedBytes == localMem.CurrentUsage) {
+                        metrics.memoryUsedBytes = localMem.CurrentUsage + nonLocalMem.CurrentUsage;
+                    }
+                    if (metrics.memoryTotalBytes == 0 || metrics.memoryTotalBytes <= 512 * 1024 * 1024) {
+                        metrics.memoryTotalBytes = target.desc.DedicatedVideoMemory + 
+                            ((target.desc.SharedSystemMemory > 0) ? target.desc.SharedSystemMemory : nonLocalMem.Budget);
                     }
                 }
             }
+        } else {
+            if (metrics.memoryTotalBytes == 0) {
+                metrics.memoryTotalBytes = target.desc.DedicatedVideoMemory;
+            }
         }
-    } else {
-        metrics.memoryTotalBytes = target.desc.DedicatedVideoMemory;
     }
 
     // 3. AMD ADL Telemetry Enrichment (Core thermals, board power wattage, fan RPM)

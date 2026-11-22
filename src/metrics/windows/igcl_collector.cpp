@@ -21,12 +21,15 @@ bool IgclCollector::LoadIgcl(const char* customDllPath) {
     if (!customDllPath_.empty()) {
         igclDll_ = LoadLibraryA(customDllPath_.c_str());
     } else {
+#ifdef BARESTATS_ENABLE_TEST_MOCKS
         char envBuf[MAX_PATH];
         DWORD len = GetEnvironmentVariableA("BARESTATS_MOCK_IGCL_DLL", envBuf, MAX_PATH);
         if (len > 0 && len < MAX_PATH) {
             igclDll_ = LoadLibraryA(envBuf);
-        } else {
-            igclDll_ = LoadLibraryA("ControlLib.dll");
+        } else
+#endif
+        {
+            igclDll_ = LoadLibraryExA("ControlLib.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         }
     }
 

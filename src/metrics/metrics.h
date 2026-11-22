@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include "metrics/llm/llm_resolver.h"
 
 namespace BareStats {
 
@@ -21,6 +22,9 @@ struct GpuMetrics {
     uint64_t memoryUsedBytes = 0;
     uint64_t memoryTotalBytes = 0;
     uint64_t memoryReservedBytes = 0;
+    bool isIntegrated = false;
+    uint64_t dedicatedVideoMemoryBytes = 0; // BIOS dedicated aperture (e.g. 128 MB)
+    uint64_t sharedSystemMemoryBytes = 0;   // Shared system memory pool (e.g. 7.9 GB)
     std::optional<uint32_t> temperatureC;
     std::optional<uint32_t> tempSlowdownLimitC;
     std::optional<uint32_t> powerWatts;
@@ -50,6 +54,7 @@ struct SystemMetrics {
     std::vector<GpuMetrics> gpus; // All targeted GPUs for side-by-side multi-GPU monitoring
     MemoryMetrics memory;
     NetworkMetrics network;
+    RigClusterSnapshot cluster{};
 };
 
 } // namespace BareStats

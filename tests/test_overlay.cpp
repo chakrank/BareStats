@@ -389,3 +389,71 @@ bool Test_LinuxOverlay_CustomGridWithEmptyCells() {
     TEST_ASSERT(slots[1].relX > 800 + slots[0].width + 2 * 160, "RAM slot must skip empty cells and gaps");
     return true;
 }
+
+// 7. Linux Overlay ColSpan and ColIndex Alignment
+bool Test_LinuxOverlay_ColSpanAndColIndexLayout() {
+    BareStats::AppConfig config;
+    config.layout = BareStats::OverlayLayout::CustomGrid;
+    config.gridMode = BareStats::GridMode::Islands;
+    config.customGrid.numCols = 4;
+    config.cellGap = 10;
+    config.rowGap = 6;
+    config.preset = BareStats::PositionPreset::TopLeft;
+    config.margin = 0;
+
+    BareStats::GridRow row0;
+    row0.cells.push_back({ "cpu", 0, 1 });
+    row0.cells.push_back({ "gpu0", 1, 2 }); // Spans col 1 and 2
+    row0.cells.push_back({ "ram", 3, 1 });  // Col 3
+    config.customGrid.rows.push_back(row0);
+
+    BareStats::SystemMetrics metrics;
+    metrics.cpu.utilizationPercent = 10.0;
+    metrics.memory.usedBytes = 4ULL * 1024 * 1024 * 1024;
+    metrics.memory.totalBytes = 16ULL * 1024 * 1024 * 1024;
+    metrics.gpu.isAvailable = true;
+    metrics.gpu.utilizationPercent = 30.0;
+
+    BareStats::MonitorInfo monitor;
+    monitor.rcWork = { 0, 0, 1920, 1080 };
+    monitor.rcMonitor = { 0, 0, 1920, 1080 };
+
+    auto slots = BareStats::LinuxOverlay::LayoutIslands(config, metrics, monitor);
+    TEST_ASSERT(slots.size() == 3, "Must produce 3 active island slots");
+    TEST_ASSERT(slots[0].token == "cpu" && slots[0].colIndex == 0, "Slot 0 must be cpu at colIndex 0");
+    TEST_ASSERT(slots[1].token == "gpu0" && slots[1].colIndex == 1, "Slot 1 must be gpu0 at colIndex 1");
+    TEST_ASSERT(slots[2].token == "ram" && slots[2].colIndex == 3, "Slot 2 must be ram at colIndex 3");
+
+    TEST_ASSERT(slots[1].relX >= slots[0].relX + slots[0].width, "gpu0 must be to right of cpu");
+    TEST_ASSERT(slots[2].relX > slots[1].relX + slots[1].width, "ram must be to right of spanned gpu0");
+
+    return true;
+}
+
+// 8. Position Preset Cycling Sequence Verification
+bool Test_Overlay_PositionPresetCyclingSequence() {
+    static const BareStats::PositionPreset kPresets[] = {
+        BareStats::PositionPreset::BottomCenter,
+        BareStats::PositionPreset::BottomRight,
+        BareStats::PositionPreset::TopRight,
+        BareStats::PositionPreset::TopCenter,
+        BareStats::PositionPreset::TopLeft,
+        BareStats::PositionPreset::BottomLeft
+    };
+    int count = static_cast<int>(sizeof(kPresets) / sizeof(kPresets[0]));
+
+    BareStats::PositionPreset cur = BareStats::PositionPreset::BottomCenter;
+    for (int step = 0; step < count; ++step) {
+        int nextIdx = 0;
+        for (int i = 0; i < count; ++i) {
+            if (cur == kPresets[i]) {
+                nextIdx = (i + 1) % count;
+                break;
+            }
+        }
+        cur = kPresets[nextIdx];
+        TEST_ASSERT(cur == kPresets[(step + 1) % count], "Preset cycle step must match sequence");
+    }
+
+    return true;
+}

@@ -35,6 +35,7 @@ struct NetworkCollector::Impl {
     uint64_t prevOutOctets = 0;
     std::chrono::steady_clock::time_point prevTime;
     std::wstring primaryAdapterName;
+    std::wstring prevAdapterName;
 
     Impl() {
         prevTime = std::chrono::steady_clock::now();
@@ -79,7 +80,7 @@ struct NetworkCollector::Impl {
         return true;
     }
 
-    NET_IFINDEX GetBestGatewayInterfaceIndex() const {
+    NET_IFINDEX GetBestGatewayInterfaceIndex(PMIB_IF_TABLE2 pTable = nullptr) const {
         PMIB_IPFORWARD_TABLE2 pRouteTable = nullptr;
         NET_IFINDEX bestIndex = 0;
         ULONG lowestMetric = ULONG_MAX;
@@ -107,6 +108,18 @@ struct NetworkCollector::Impl {
                 }
 
                 if (isDefaultRoute) {
+                    if (pTable != nullptr) {
+                        bool matchesPhysical = false;
+                        for (ULONG j = 0; j < pTable->NumEntries; ++j) {
+                            if (pTable->Table[j].InterfaceIndex == row.InterfaceIndex && IsValidPhysicalAdapter(pTable->Table[j])) {
+                                matchesPhysical = true;
+                                break;
+                            }
+                        }
+                        if (!matchesPhysical) {
+                            continue;
+                        }
+                    }
                     if (row.Metric < lowestMetric) {
                         lowestMetric = row.Metric;
                         bestIndex = row.InterfaceIndex;
@@ -126,7 +139,7 @@ struct NetworkCollector::Impl {
             return metrics;
         }
 
-        NET_IFINDEX bestIndex = GetBestGatewayInterfaceIndex();
+        NET_IFINDEX bestIndex = GetBestGatewayInterfaceIndex(pTable);
 
         uint64_t totalIn = 0;
         uint64_t totalOut = 0;
@@ -220,8 +233,19 @@ struct NetworkCollector::Impl {
         if (!initialized) {
             prevInOctets = totalIn;
             prevOutOctets = totalOut;
+            prevAdapterName = primaryName;
             prevTime = now;
             initialized = true;
+            return metrics;
+        }
+
+        if (primaryName != prevAdapterName) {
+            prevInOctets = totalIn;
+            prevOutOctets = totalOut;
+            prevAdapterName = primaryName;
+            prevTime = now;
+            metrics.rxBytesPerSec = 0;
+            metrics.txBytesPerSec = 0;
             return metrics;
         }
 
@@ -235,6 +259,7 @@ struct NetworkCollector::Impl {
 
             prevInOctets = totalIn;
             prevOutOctets = totalOut;
+            prevAdapterName = primaryName;
             prevTime = now;
         }
 

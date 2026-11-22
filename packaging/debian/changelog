@@ -1,0 +1,9 @@
+barestats (1.4.0) stable; urgency=medium
+
+  * Universal multi-GPU targeting in horizontal ribbon and custom matrix grid layouts.
+  * Case-insensitive telemetry token parsing and user-friendly aliases (processor, graphics, memory, wifi).
+  * Smart auto-bridge from horizontal metric order to multi-row custom grid.
+  * Pruned duplicate configuration keys across Position, Layout, Appearance, and Telemetry sections.
+  * Enhanced AppStream and desktop integration metadata.
+
+ -- Chakrank <chakrank@outlook.com>  Tue, 10 Nov 2026 10:00:00 +0530
